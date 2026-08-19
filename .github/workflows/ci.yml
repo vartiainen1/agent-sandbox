@@ -1,0 +1,52 @@
+# agent-sandbox CI — native Ubuntu is the AUTHORITATIVE Linux validation
+# substrate. Docker Desktop results are never labeled as native (see
+# docs/seccomp-derivation/verification.md).
+#
+# If the GitHub-hosted runner cannot provide a required security mechanism
+# (e.g. unprivileged user namespaces are AppArmor-restricted), the rootless
+# capability probe DETECTS and RECORDS it with a reason - it is never
+# converted into a false PASS. That limitation is documented, not papered
+# over, and HARDENED mode is never weakened to make CI green.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  native-linux:
+    name: native ubuntu ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Linux tooling (strace for native syscall observation)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+
+      - name: Compile check (all Python)
+        run: python -m compileall -q tools
+
+      - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
+        run: python3 tools/seccomp-derivation/test_derivation.py
+
+      - name: Native syscall observation (trace)
+        run: python3 tools/seccomp-derivation/trace_workloads.py --out /tmp/trace-native.json
+
+      - name: Seccomp regression gate - no undocumented syscall expansion
+        run: python3 tools/seccomp-derivation/check_trace_regression.py /tmp/trace-native.json
+
+      - name: Behavioral seccomp probe (runs as non-root runner user)
+        run: python3 tools/seccomp-derivation/probe_policy.py
+
+      - name: Rootless capability detection (records VERIFIED/BLOCKED with reason)
+        run: python3 tools/seccomp-derivation/check_rootless_capabilities.py

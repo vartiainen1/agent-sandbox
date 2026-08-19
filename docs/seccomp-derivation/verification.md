@@ -70,12 +70,22 @@ Docker's own seccomp/capability stack is not the product's boundary and
 is not claimed as such; `mount`-listing output in the probe reflects
 container mounts only.
 
-## Native CI plan (pending repo publish — user decision)
+## Native CI (authoritative — `.github/workflows/ci.yml`)
 
-1. GitHub Actions ubuntu job: `apt-get install strace python3 git`, run
-   `trace_workloads.py` and `probe_policy.py` natively.
-2. Compare the native union against `trace-results.json`; any syscall
-   present natively but missing from the allowlist FAILS the job
-   (allowlist must cover the real surface).
-3. Record native results in this file; container results remain labeled
-   container-validated.
+Published as github.com/vartiainen1/agent-sandbox; GitHub Actions ubuntu
+runs on every push (Python 3.11 + 3.12):
+
+1. Compile check + unit/regression suite (`test_derivation.py`).
+2. Native syscall observation (`trace_workloads.py`).
+3. **Seccomp regression gate** (`check_trace_regression.py`): any syscall
+   observed natively but missing from `allowlist.json` FAILS the job —
+   the allowlist must cover the real native surface or be updated
+   deliberately through change control (policy.md §5).
+4. Behavioral probe (`probe_policy.py`) — runs as the non-root runner
+   user, so it exercises the unprivileged seccomp-install path.
+5. Rootless capability detection (`check_rootless_capabilities.py`) —
+   records VERIFIED/BLOCKED per mechanism with the reason; an unavailable
+   mechanism is never converted into a false PASS.
+
+Results are recorded in this file after the first native run; container
+results remain labeled container-validated regardless.

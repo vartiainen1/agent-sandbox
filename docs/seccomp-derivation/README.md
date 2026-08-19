@@ -36,8 +36,16 @@ behaviorally: legit workloads pass, and `socket`/`ptrace`/`mount`/`chroot`/
 | `tools/seccomp-derivation/workloads.py` | The workload set |
 | `tools/seccomp-derivation/trace_workloads.py` | strace-based observation |
 | `tools/seccomp-derivation/probe_policy.py` | Behavioral verification (reference BPF implementation) |
+| `tools/seccomp-derivation/allowlist.json` | **The canonical allowlist security artifact** (single source of truth) |
+| `tools/seccomp-derivation/check_trace_regression.py` | Regression gate: fails any observed syscall outside the allowlist |
+| `tools/seccomp-derivation/check_rootless_capabilities.py` | Rootless capability detection (VERIFIED/BLOCKED with reason) |
+| `tools/seccomp-derivation/test_derivation.py` | Unit + regression suite (artifact integrity, gate, BPF layout, fail-closed guard) |
 | `tools/seccomp-derivation/Dockerfile` | Toolchain image (ubuntu 24.04 + strace + python3 + git) |
 | `tools/seccomp-derivation/trace-results.json` | Evidence record (container-validated) |
+
+CI (`.github/workflows/ci.yml`) re-runs trace → regression gate → probe on
+native ubuntu (authoritative); the gate makes undocumented syscall
+expansion a CI failure.
 
 ## Reproduce
 

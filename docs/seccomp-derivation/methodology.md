@@ -66,6 +66,9 @@ Re-run:
 Native Linux re-run (authoritative, CI): the same script on an ubuntu
 runner with strace installed (`--native` semantics are identical; only the
 host differs). Evidence record: `tools/seccomp-derivation/trace-results.json`.
+The CI job also runs the regression gate (`check_trace_regression.py`) on
+the fresh native trace — any observed syscall outside the canonical
+`allowlist.json` fails the job (see `policy.md` §5).
 
 Windows Git Bash note: prefix docker commands with `MSYS_NO_PATHCONV=1`
 (or use `//work`) — without it, MSYS rewrites the `-w /work` argument

@@ -1,0 +1,33 @@
+{
+  "artifact": "agent-sandbox HARDENED seccomp syscall allowlist",
+  "version": 1,
+  "arch": "x86_64",
+  "derived": "2026-08-19",
+  "derivation_docs": "docs/seccomp-derivation/ (methodology.md, syscall-classification.md)",
+  "default_action": "SECCOMP_RET_ERRNO | EPERM (deny)",
+  "install_point": "after all Stage-A initialization, immediately before workload exec (never before no_new_privs)",
+  "change_control": "docs/seccomp-derivation/policy.md section 5: NO UNDOCUMENTED SYSCALL EXPANSION. Any change requires an explicit diff, a documented reason, a security-impact assessment, relevant test changes, and a docs/ADR update. check_trace_regression.py fails any observed syscall outside this list.",
+  "limitations": "Docker/container-validated evidence so far; native ubuntu CI re-run authoritative. Threads (clone) and networking syscalls denied by design. glibc/x86_64-specific. Rootless uid-mapped execution NOT yet validated (Phase 1).",
+  "tier0": [
+    "access", "arch_prctl", "brk", "close", "execve", "exit_group", "fstat",
+    "getcwd", "getegid", "geteuid", "getgid", "getpid", "getppid",
+    "getrandom", "getuid", "mmap", "mprotect", "munmap", "openat",
+    "pread64", "prlimit64", "read", "rseq", "rt_sigaction",
+    "set_robust_list", "set_tid_address", "write"
+  ],
+  "tier1": [
+    "dup2", "epoll_create1", "fcntl", "futex", "getdents64", "gettid",
+    "ioctl", "lseek", "mkdir", "newfstatat", "pipe2", "poll", "readlink",
+    "rt_sigprocmask", "rt_sigreturn", "unlink", "vfork", "wait4"
+  ],
+  "allowlist": [
+    "access", "arch_prctl", "brk", "close", "dup2", "epoll_create1",
+    "execve", "exit_group", "fcntl", "fstat", "futex", "getcwd",
+    "getdents64", "getegid", "geteuid", "getgid", "getpid", "getppid",
+    "getrandom", "gettid", "getuid", "ioctl", "lseek", "mkdir", "mmap",
+    "mprotect", "munmap", "newfstatat", "openat", "pipe2", "poll",
+    "pread64", "prlimit64", "read", "readlink", "rseq", "rt_sigaction",
+    "rt_sigprocmask", "rt_sigreturn", "set_robust_list", "set_tid_address",
+    "unlink", "vfork", "wait4", "write"
+  ]
+}

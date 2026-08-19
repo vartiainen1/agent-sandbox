@@ -44,19 +44,19 @@ SYS = {
     "unshare": 272, "clone": 56,
 }
 
-# The DERIVED allowlist: every syscall observed across the Tier 0 + Tier 1
-# workload set, classified as required (see docs/seccomp-derivation/).
-# Anything not here is denied (default action EPERM).
-ALLOWED = [
-    "access", "arch_prctl", "brk", "close", "dup2", "epoll_create1",
-    "execve", "exit_group", "fcntl", "fstat", "futex", "getcwd",
-    "getdents64", "getegid", "geteuid", "getgid", "getpid", "getppid",
-    "getrandom", "gettid", "getuid", "ioctl", "lseek", "mkdir", "mmap",
-    "mprotect", "munmap", "newfstatat", "openat", "pipe2", "poll",
-    "pread64", "prlimit64", "read", "readlink", "rseq", "rt_sigaction",
-    "rt_sigprocmask", "rt_sigreturn", "set_robust_list", "set_tid_address",
-    "unlink", "vfork", "wait4", "write",
-]
+# The DERIVED allowlist is the canonical security artifact
+# (allowlist.json, single source of truth - see policy.md change control).
+# Loading it here (instead of an embedded copy) guarantees the probe always
+# tests the artifact that the regression gate and the docs describe.
+def load_allowlist() -> list[str]:
+    import json
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "allowlist.json"), encoding="utf-8") as f:
+        data = json.load(f)
+    return data["allowlist"]
+
+
+ALLOWED = load_allowlist()
 
 # --- seccomp/BPF constants ---
 PR_SET_NO_NEW_PRIVS = 38
@@ -112,11 +112,20 @@ def build_filter(allow: list[str]) -> sock_fprog:
     return prog
 
 
-libc = ctypes.CDLL(None, use_errno=True)
+_libc = None
+
+
+def _get_libc():
+    """Lazy libc handle so the module is importable on non-Linux hosts
+    (unit tests, compile check); actual syscalls are Linux-only at runtime."""
+    global _libc
+    if _libc is None:
+        _libc = ctypes.CDLL(None, use_errno=True)
+    return _libc
 
 
 def prctl(option, *args):
-    libc.prctl(ctypes.c_int(option), *[ctypes.c_ulong(a) for a in args])
+    _get_libc().prctl(ctypes.c_int(option), *[ctypes.c_ulong(a) for a in args])
 
 
 def load_filter(prog) -> None:
@@ -126,6 +135,7 @@ def load_filter(prog) -> None:
 
 def syscall_ret(nr, *args) -> int:
     """Direct syscall via libc; returns -1 and sets errno on failure."""
+    libc = _get_libc()
     libc.syscall.restype = ctypes.c_long
     return libc.syscall(ctypes.c_long(nr), *[ctypes.c_ulong(a) for a in args])
 

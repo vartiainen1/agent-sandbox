@@ -31,9 +31,11 @@ exercise (methodology + classification) · Implementation: Phase 1 step 13
     rseq rt_sigaction rt_sigprocmask rt_sigreturn set_robust_list
     set_tid_address unlink vfork wait4 write
 
-Machine-readable form: the `ALLOWED` list in
-`tools/seccomp-derivation/probe_policy.py` (which also serves as the
-reference BPF implementation for Phase 1 step 13).
+Machine-readable form (single source of truth):
+`tools/seccomp-derivation/allowlist.json`. The behavioral probe loads it;
+the regression gate (`check_trace_regression.py`) fails any observed
+syscall outside it; the unit suite (`test_derivation.py`) pins its
+integrity (45, sorted, unique, default action).
 
 ## 3. What is denied and why (summary)
 
@@ -67,21 +69,29 @@ credential boundary (no mounts, env allowlist). The layers are
 independent: seccomp denies `socket` even if the netns were misconfigured;
 the rootfs denies `/etc/passwd` even if `openat` is allowed.
 
-## 5. Change control
+## 5. Change control — NO UNDOCUMENTED SYSCALL EXPANSION
 
-The allowlist is **not** edited ad hoc:
+The allowlist is a regression-protected security artifact
+(`tools/seccomp-derivation/allowlist.json`) and is **not** edited ad hoc:
 
 1. A workload that needs a syscall outside the allowlist is a derivation
    input, not a policy patch. Re-run the tracer with that workload,
    classify the new syscall (methodology steps 3-7), update the
-   classification table and this policy, and re-run the verification probe.
-2. Removing a syscall from the allowlist requires re-running step 11
+   classification table, this policy, AND `allowlist.json` together, and
+   re-run the verification probe.
+2. **Mechanical gate**: `check_trace_regression.py` fails any trace whose
+   observed syscall set contains a syscall outside `allowlist.json` — an
+   accidental or undocumented expansion is detected in CI and locally.
+   The native CI job runs trace → gate → probe on every push.
+3. Removing a syscall from the allowlist requires re-running step 11
    (prohibited-op verification) to confirm the behavior still holds.
-3. Any change is a code + docs + tests change through the normal review
-   path (ADR if it affects the security contract).
-4. The probe's `ALLOWED` list and this document must stay in sync — the
-   probe is the machine-readable source of truth; this document is the
-   rationale.
+4. Any change is a code + docs + tests change through the normal review
+   path (ADR if it affects the security contract). Required per change:
+   explicit diff, documented reason, security-impact assessment, relevant
+   test changes, docs update.
+5. `allowlist.json` is the machine-readable source of truth; the probe
+   loads it, the gate checks against it, and the unit suite pins its
+   integrity — this document is the rationale.
 
 ## 6. Known limitations (documented, not hidden)
 
