@@ -311,10 +311,95 @@ point advances to PRIVILEGES.
   path, no host escape, host netns unchanged).
 - **NATIVE VERIFIED**: fail-closed behavior and host-side logic only;
   the full rootless path remains NOT VERIFIED NATIVE (recorded reason).
-- **KNOWN LIMITATION**: the workload can toggle its own lo (ns-local
-  CAP_NET_ADMIN) until Steps 12-13 — localhost-only, no external path
-  (verified); netlink EOPNOTSUPP behavior is environment-specific and
-  not the security mechanism.
+- **KNOWN LIMITATION (RESOLVED in Step 7)**: at Step 5 the workload
+  could still toggle its own lo (ns-local CAP_NET_ADMIN) — localhost-
+  only, no external path (verified). Step 7 (capability reduction)
+  removes CAP_NET_ADMIN, so the toggle now FAILS (EPERM) and lo stays
+  DOWN; the corresponding test_network tests were updated to assert the
+  stronger behavior (see the Step 7 record below). Seccomp (Step 13)
+  remains outstanding for the syscall layer. Netlink EOPNOTSUPP
+  behavior is environment-specific and not the security mechanism.
+
+## Phase 1 Step 7 — capability reduction (bounding-set drop) results (2026-08-19)
+
+Mechanism implemented (ARCHITECTURE.md Q11, ADR-008, S-009): the ENTIRE
+capability bounding set is dropped (prctl(PR_CAPBSET_DROP) for every
+capability 0..63; EINVAL = beyond CAP_LAST_CAP on this kernel, skipped),
+the ambient set is cleared (prctl(PR_CAP_AMBIENT_CLEAR_ALL)), and
+effective/permitted/inheritable are cleared via capset(2)
+(_LINUX_CAPABILITY_VERSION_3, all-zero) — `agent_sandbox/isolation/
+privileges.py` + `syscalls.py` capset wrapper (x86_64 126 / aarch64 91).
+The workload therefore holds NO capabilities, including inside its own
+user namespace. Verification is the kernel-state READ-BACK of
+/proc/self/status: CapBnd/CapEff/CapPrm/CapInh/CapAmb must ALL be zero;
+any residual capability is a refusal. Applied in PID 1 AFTER no_new_privs
+(mandated order) and BEFORE the workload fn; a failed or unverified
+reduction refuses with the workload never executed.
+
+### Why the mechanism is rootless-safe
+
+- PR_CAPBSET_DROP needs CAP_SETPCAP in the caller's user namespace —
+  sandbox PID 1 holds it before the reduction (verified, never assumed);
+  the drop loop runs BEFORE capset removes the sets.
+- Clearing one's own sets (capset to zero) and PR_CAP_AMBIENT_CLEAR_ALL
+  require no privilege.
+- No host/root privileges, no privileged helper, no setuid component
+  (ADR-002): every step is reachable unprivileged inside the userns.
+
+### Empirical findings (container uid 1001 — the gate catching real interactions)
+
+1. **The Step 5 lo-toggle residual is RESOLVED**: without CAP_NET_ADMIN
+   the ioctl lo-up attempt inside the sandbox now FAILS (EPERM) and lo
+   stays DOWN — test_network's WorkloadReenableTests assert the stronger
+   behavior (attempt != OK, lo down, connects still ENETUNREACH).
+2. **Two Step 2/3 mount-isolation tests were updated**: their workload
+   fns mounted a tmpfs to demonstrate the mount-namespace boundary;
+   after the drop, mount(2) inside the workload fails EPERM (CAP_SYS_ADMIN
+   gone) — an intended, stronger property. Both tests now assert the
+   attempt fails, nothing is mounted, and the host mountinfo is
+   byte-identical before/after (no propagation, no leak). The mount-ns
+   distinctness property remains verified by ns identity.
+3. Seccomp derivation unchanged: capset/prctl happen during Stage-A
+   initialization (before any filter — ADR-008), never in workload
+   traces; the regression gate still shows 45 syscalls, no expansion.
+
+### Container-validated results (Docker Desktop, WSL2 kernel, uid 1001, seccomp=unconfined)
+
+- **31/31 Step 7 tests PASS** (new capability tests: 12 host-side, 4
+  sandbox-internal, 3 probe + 2 updated Step 2/3 mount tests in the
+  regression). Full container suite: 173 tests OK (2 pre-existing
+  substrate skips). Key evidence: capability sets all-zero at workload
+  time with no_new_privs still set; CAP_SYS_ADMIN/CAP_SYS_PTRACE/
+  CAP_NET_ADMIN/CAP_SYS_MODULE/CAP_SYS_RAWIO/CAP_DAC_OVERRIDE absent
+  bit-by-bit; workload not executed when the reduction fails (marker
+  absent); unexpected residual capability -> refusal; probe ok + capset/
+  verify failure refusals.
+- Same substrate caveat as Steps 2-6 (Docker seccomp=unconfined to
+  exercise OUR code; the product filter is Step 13).
+
+### Native ubuntu CI (authoritative) — substrate limitation unchanged
+
+| Check | 3.11 | 3.12 |
+|---|---|---|
+| capability-reduction real-path tests | SKIPPED (recorded reason: setgroups deny EACCES — rootless mapping cannot be established on the runner) | same |
+| host-side wrapper/fail-closed/failure-injection tests | PASS | PASS |
+| Skeleton / namespace / rootfs / procdev / network / no_new_privs regression | PASS | PASS |
+| Seccomp regression gate + behavioral probe | PASS | PASS |
+
+### Step 7 labels
+
+- **DESIGN INTENT** (ADR-008, S-009): full bounding-set drop + cleared
+  sets before the workload; no capability may remain, namespace-local
+  included.
+- **DOCKER VERIFIED**: reduction + read-back (all sets zero), per-cap
+  absence of the named forbidden capabilities, ordering after
+  no_new_privs, workload-never-executed on failure, unexpected-state
+  refusal, lo-toggle resolution, mount-EPERM resolution.
+- **NATIVE VERIFIED**: fail-closed behavior and host-side logic only;
+the full rootless path remains NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: seccomp (Step 13) is not yet installed — the
+  syscall-level restriction remains outstanding; the complete
+  privilege-hardening surface is not claimed until it lands.
 
 ## Phase 1 Step 6 — no_new_privs results (2026-08-19)
 

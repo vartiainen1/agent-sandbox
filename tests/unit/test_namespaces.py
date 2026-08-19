@@ -230,27 +230,37 @@ class NamespaceCreationTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_host_mount_namespace_unchanged(self):
-        # A tmpfs mounted inside the sandbox's mount namespace must NOT
-        # appear in the host mount namespace (mount propagation does not
-        # cross the new private mount ns).
+        # Step 7 (capability reduction) removed CAP_SYS_ADMIN, so a mount
+        # attempt inside the sandbox now FAILS (EPERM) - the workload
+        # cannot mount at all (the mount-namespace distinctness itself is
+        # verified by test_mount_namespace_distinct). The host mount
+        # namespace must be unchanged by the attempt: no propagation, no
+        # leak. (Before Step 7 the fn mounted a tmpfs to demonstrate the
+        # boundary; the gate caught that the workload no longer can - a
+        # stronger property.)
         before = _mountinfo()
 
         def fn(state):
             d = tempfile.mkdtemp(prefix="as-mnt-", dir="/tmp")
             try:
-                syscalls.mount(b"tmpfs", d.encode(), b"tmpfs", 0)
-                with open(os.path.join(d, "marker"), "w", encoding="ascii") as f:
-                    f.write("sandbox-only")
+                try:
+                    syscalls.mount(b"tmpfs", d.encode(), b"tmpfs", 0)
+                    attempt = "OK"
+                except OSError as e:
+                    attempt = f"errno:{e.errno}"
                 visible_inside = any(
                     "tmpfs" in line and d in line for line in _mountinfo())
-                syscalls.umount2(d.encode())
-                return json.dumps({"dir": d, "visible_inside": visible_inside})
+                return json.dumps({"dir": d, "attempt": attempt,
+                                   "visible_inside": visible_inside})
             finally:
                 if os.path.exists(d):
                     os.rmdir(d)
 
         data = json.loads(_run(fn))
-        self.assertTrue(data["visible_inside"])
+        self.assertNotEqual(data["attempt"], "OK",
+                            "mount must fail after the Step 7 capability drop")
+        self.assertFalse(data["visible_inside"],
+                         "no mount may exist inside the sandbox")
         after = _mountinfo()
         self.assertEqual(before, after)  # host mount namespace unchanged
         self.assertNotIn(data["dir"], after)  # no leak of the sandbox mount

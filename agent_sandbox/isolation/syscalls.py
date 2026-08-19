@@ -34,13 +34,13 @@ class _SyscallTable:
     X86_64 = {
         "getpid": 39, "getuid": 102, "getgid": 104,
         "unshare": 272, "mount": 165, "umount2": 166,
-        "pivot_root": 155, "prctl": 157,
+        "pivot_root": 155, "prctl": 157, "capset": 126,
     }
     # aarch64
     AARCH64 = {
         "getpid": 172, "getuid": 174, "getgid": 175,
         "unshare": 97, "mount": 40, "umount2": 39,
-        "pivot_root": 41, "prctl": 167,
+        "pivot_root": 41, "prctl": 167, "capset": 91,
     }
 
 
@@ -177,6 +177,9 @@ def pivot_root(new_root: bytes, put_old: bytes) -> None:
 # prctl(2) options (kernel ABI)
 PR_SET_NO_NEW_PRIVS = 38   # arg2=1 enables no_new_privs for this thread
 PR_GET_NO_NEW_PRIVS = 39   # returns 0 or 1 (the current no_new_privs value)
+PR_CAPBSET_DROP = 24       # arg2 = capability number to drop from the bounding set
+PR_CAP_AMBIENT = 47        # ambient-capability option (see PR_CAP_AMBIENT_CLEAR_ALL)
+PR_CAP_AMBIENT_CLEAR_ALL = 4  # PR_CAP_AMBIENT sub-option: clear all ambient caps
 
 
 def prctl(option: int, arg2: int = 0, arg3: int = 0, arg4: int = 0,
@@ -187,6 +190,36 @@ def prctl(option: int, arg2: int = 0, arg3: int = 0, arg4: int = 0,
     OSError with the real errno (ADR-001)."""
     return _check(_raw(_number("prctl"), option, arg2, arg3, arg4, arg5),
                   "prctl")
+
+
+# capset(2) - capability set manipulation (clearing one's own sets to
+# zero never requires privilege; raising them would, and is never done).
+_LINUX_CAPABILITY_VERSION_3 = 0x20080522
+
+
+class CapUserHeader(ctypes.Structure):
+    """struct __user_cap_header_struct (kernel ABI)."""
+    _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+
+class CapUserData(ctypes.Structure):
+    """struct __user_cap_data_struct (kernel ABI): one 32-bit word per
+    set; _LINUX_CAPABILITY_VERSION_3 uses an array of two for bits 0-63."""
+    _fields_ = [("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32),
+                ("inheritable", ctypes.c_uint32)]
+
+
+def capset(version: int, data: list) -> None:
+    """capset(2): set the calling thread's capability sets. ``data`` is a
+    list of (effective, permitted, inheritable) tuples (two entries for
+    _LINUX_CAPABILITY_VERSION_3, covering bits 0-63). The sandbox uses it
+    ONLY to clear every set to zero - lowering one's own capabilities
+    never requires privilege. Raises OSError with the real errno on
+    failure (fail closed)."""
+    hdr = CapUserHeader(version, 0)
+    arr = (CapUserData * len(data))(*[CapUserData(*d) for d in data])
+    _check(_raw(_number("capset"), ctypes.byref(hdr), ctypes.byref(arr)),
+           "capset")
 
 
 

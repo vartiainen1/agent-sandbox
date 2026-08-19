@@ -316,9 +316,14 @@ class PivotRootTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_mount_propagation_no_host_leak(self):
-        # A mount created inside the sandbox must not propagate to the host:
-        # the host mountinfo is byte-identical before/after, and the host
-        # path under the rootfs tree stays on the rootfs device (no tmpfs).
+        # Step 7 (capability reduction) removed CAP_SYS_ADMIN: a mount
+        # attempt inside the sandbox now FAILS (EPERM), so nothing can
+        # propagate to the host. The host mountinfo is byte-identical
+        # before/after and the host-side path under the rootfs tree stays
+        # on the rootfs device - no mount ever reaches the host. (Before
+        # Step 7 the fn mounted a tmpfs to demonstrate the boundary; the
+        # gate caught that the workload no longer can - a stronger
+        # property.)
         def mountinfo():
             with open("/proc/self/mountinfo", "r", encoding="ascii") as f:
                 return sorted(f.read().splitlines())
@@ -329,14 +334,16 @@ class PivotRootTests(unittest.TestCase):
         def fn(state, fs):
             t = pathlib.Path("/workspace/.probe-mnt")
             t.mkdir()
-            syscalls.mount(b"tmpfs", str(t).encode(), b"tmpfs", 0, b"size=1m")
-            (t / "marker").write_text("sandbox-mount\n")
-            return json.dumps({"is_tmpfs": os.stat(str(t)).st_dev != os.stat("/workspace").st_dev,
-                               "marker": (t / "marker").read_text().strip()})
+            try:
+                syscalls.mount(b"tmpfs", str(t).encode(), b"tmpfs", 0, b"size=1m")
+                attempt = "OK"
+            except OSError as e:
+                attempt = f"errno:{e.errno}"
+            return json.dumps({"attempt": attempt})
 
         data = json.loads(_run(fn, self.rootfs))
-        self.assertTrue(data["is_tmpfs"])
-        self.assertEqual(data["marker"], "sandbox-mount")
+        self.assertNotEqual(data["attempt"], "OK",
+                            "mount must fail after the Step 7 capability drop")
         after = mountinfo()
         self.assertEqual(before, after, "sandbox mount leaked into host mount namespace")
         host_target = os.path.join(self.rootfs.layout.dir, target_rel)

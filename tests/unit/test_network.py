@@ -14,12 +14,14 @@ Categories (kept separate, per the charter):
 Empirical facts this suite pins (Step 5 probe, container):
 - The fresh netns is deny-by-construction: only lo (DOWN, no addresses),
   no IPv4 routes, no host interfaces; connect() -> ENETUNREACH.
-- The workload CAN toggle lo (ns-local CAP_NET_ADMIN in the userns-owned
-  netns) - localhost-only, and the suite asserts the SECURITY property
-  that holds on every substrate: even after the attempt, no usable path
-  to any non-loopback target exists (connect still fails). Full
-  prevention of even the lo toggle lands with the Step 12 capability drop
-  + Step 13 seccomp (documented residual, not claimed here).
+- Since Step 7 (capability reduction, PRIVILEGES stage), the workload
+  CANNOT toggle lo: CAP_NET_ADMIN is removed from the sandbox's
+  effective/permitted sets and bounding set, so the ioctl lo-up attempt
+  FAILS (EPERM) and lo stays DOWN - the Step 5 documented residual
+  ("workload can toggle its own lo via ns-local CAP_NET_ADMIN until Step
+  12") is RESOLVED here. The suite asserts the attempt fails and the
+  deny-by-construction state holds (no usable path, no host escape);
+  seccomp (Step 13) remains outstanding for the syscall layer.
 - The workload cannot reach the host netns (no host pid visible -> no
   host ns fd path; setns/iface-move need initial-userns privileges).
 - Netlink route/iface mutations returned EOPNOTSUPP in the validation
@@ -125,8 +127,10 @@ def _lo_flags_inside() -> int:
 
 def _bring_lo_up_inside() -> str:
     """Attempt to bring lo UP from inside the sandbox (ioctl). Returns
-    'OK' or 'errno:N'. Empirically SUCCEEDS (ns-local CAP_NET_ADMIN) -
-    localhost-only, no external path; full prevention is Steps 12-13."""
+    'OK' or 'errno:N'. Since Step 7 (capability reduction) the attempt
+    FAILS (EPERM - no CAP_NET_ADMIN); before Step 7 it succeeded
+    (ns-local CAP_NET_ADMIN) with localhost-only effect. The tests assert
+    the current, stronger behavior."""
     assert fcntl is not None
     try:
         flags = _lo_flags_inside()
@@ -348,11 +352,12 @@ class NetworkBoundaryTests(unittest.TestCase):
 
 
 class WorkloadReenableTests(unittest.TestCase):
-    """The workload cannot re-enable networking: the structural property
-    (no usable path, no host escape) is verified on every substrate.
-    (The lo flag-toggle itself is possible via ns-local CAP_NET_ADMIN and
-    is a documented residual until Steps 12-13 - the tests assert the
-    security boundary, never the environment's EOPNOTSUPP artifact.)"""
+    """The workload cannot re-enable networking: since Step 7 the
+    capability reduction has removed CAP_NET_ADMIN, so even the lo
+    flag-toggle FAILS and lo stays DOWN; the structural property (no
+    usable path, no host escape) holds on every substrate. (The tests
+    assert the security boundary, never the environment's EOPNOTSUPP
+    artifact.)"""
 
     def setUp(self):
         _require_fs(self)
@@ -363,12 +368,10 @@ class WorkloadReenableTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_workload_cannot_enable_loopback(self):
-        # Attempt to bring lo UP: the attempt result is recorded honestly
-        # (may succeed on capable substrates), and the SECURITY property is
-        # asserted: no usable network path exists afterward - every
-        # non-loopback connect still fails, no addresses appear beyond the
-        # loopback's own, and the host netns stays unreachable. (The lo
-        # toggle itself is prevented by Steps 12-13 - documented residual.)
+        # Step 7 (capability reduction) removed CAP_NET_ADMIN: the lo-up
+        # attempt now FAILS (EPERM) and lo stays DOWN - the Step 5
+        # documented residual is resolved. Every non-loopback connect
+        # still fails ENETUNREACH and the host netns stays unreachable.
         def fn(state, fs):
             attempt = _bring_lo_up_inside()
             return json.dumps({
@@ -380,10 +383,12 @@ class WorkloadReenableTests(unittest.TestCase):
             })
 
         data = json.loads(_run(fn, self.rootfs))
-        self.assertIn(data["attempt"], ("OK",), data["attempt"])
+        self.assertNotEqual(data["attempt"], "OK",
+                            "lo-up must fail after the Step 7 capability drop")
+        self.assertFalse(data["lo_up"], "lo must stay DOWN after the attempt")
         for label in ("connect_public", "connect_metadata", "connect_host_gw"):
             self.assertEqual(data[label], "errno:101",
-                             f"{label} must fail ENETUNREACH even after the "
+                             f"{label} must fail ENETUNREACH after the "
                              f"workload's lo-up attempt ({data['attempt']})")
 
     @skip_unless_linux
@@ -450,19 +455,24 @@ class WorkloadReenableTests(unittest.TestCase):
                              "netns - no host netns fd path exists")
 
     @skip_unless_linux
-    def test_loopback_up_creates_no_external_path(self):
-        # Even a successfully brought-up lo yields only localhost: public
-        # metadata/host targets stay unreachable - deny by construction.
+    def test_loopback_up_attempt_keeps_deny_by_construction(self):
+        # Step 7 resolved the lo-toggle residual: without CAP_NET_ADMIN the
+        # workload cannot bring lo UP, so the deny-by-construction state is
+        # now enforced by the capability drop itself (plus the netns).
         def fn(state, fs):
-            _bring_lo_up_inside()
+            attempt = _bring_lo_up_inside()
             return json.dumps({
+                "attempt": attempt,
                 "lo_up": bool(_lo_flags_inside() & IFF_UP),
                 "public": _try_connect_inside("8.8.8.8", 443),
                 "host_gw": _try_connect_inside("172.16.0.1", 80),
             })
 
         data = json.loads(_run(fn, self.rootfs))
-        self.assertTrue(data["lo_up"])
+        self.assertNotEqual(data["attempt"], "OK",
+                            "lo-up must fail after the Step 7 capability drop")
+        self.assertFalse(data["lo_up"],
+                         "lo must remain DOWN after the attempt")
         self.assertEqual(data["public"], "errno:101")
         self.assertEqual(data["host_gw"], "errno:101")
 
