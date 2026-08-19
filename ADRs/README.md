@@ -20,3 +20,4 @@ ACCEPTED, SUPERSEDED, REJECTED.
 | [ADR-012](ADR-012-audit.md) | Host-side JSONL recorder; session correlation; audit is not enforcement | ACCEPTED | 2026-08-19 |
 | [ADR-013](ADR-013-control-surface.md) | Single enforcement core for CLI / MCP / API | ACCEPTED | 2026-08-19 |
 | [ADR-014](ADR-014-validation-substrate.md) | Docker Desktop = container validation only; native CI is authoritative | ACCEPTED | 2026-08-19 |
+| [ADR-015](ADR-015-dev-bind-mount.md) | Minimal /dev via six identity-verified host bind-mounts (mknod is kernel-impossible in the rootless userns) | ACCEPTED | 2026-08-19 |

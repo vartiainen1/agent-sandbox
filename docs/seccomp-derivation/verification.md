@@ -167,3 +167,76 @@ directive (detect, record, never false-PASS, never weaken):
   or VM with userns enabled is the open question).
 - The rootless capability probe now exercises the full mapping and reports
   BLOCKED with the reason instead of the earlier creation-only VERIFIED.
+
+## Phase 1 Step 4 — /proc + /dev + /sys boundary results (2026-08-19)
+
+Mechanism implemented: `/proc` mounted in sandbox PID 1 with
+`MS_NOSUID|MS_NODEV|MS_NOEXEC` + `hidepid=2` (mount state VERIFIED from
+mountinfo, never assumed from mount() success); minimal `/dev` as a
+sandbox-private tmpfs with EXACTLY six identity-verified host
+bind-mounts (ADR-015); `/sys` absent (no mount, no dir — absence is the
+mechanism). FILESYSTEM stage now completes the proc/dev/sys items (7-9)
+of the Phase 1 order; HARDENED refusal point advances to NETWORK.
+
+### mknod discovery + bind-mount decision (stop-condition fired, then approved)
+
+`mknod(2)` of device nodes is **kernel-impossible inside a non-initial
+user namespace** — a Linux rule, not a container artifact. Empirically
+(container, uid 1001, full namespace boundary, ns-root with
+`CapEff: 000001ffffffffff` incl. CAP_MKNOD): `mknod("/dev/null",
+S_IFCHR|0666, 1:3)` → EPERM. Authoritative (man 7 user_namespaces):
+device creation is one of the operations for which **only a process with
+privileges in the initial user namespace** has the capability. The
+charter stop-condition fired; the approved resolution (ADR-015) is the
+standard rootless pattern: bind-mount exactly the six identity-verified
+host nodes into a sandbox-private /dev tmpfs, with pre-bind identity
+verification (type + exact major/minor) and post-bind exact-inventory
+verification. No host mknod, no privileged helper; the sandbox cannot
+create device nodes at all (additional property).
+
+### Kernel difference observed (not a sandbox defect)
+
+The container kernel (Docker Desktop/WSL2, a newer 6.x) prints the
+hidepid=2 mount option in mountinfo super options as `hidepid=invisible`
+— the symbolic alias for mode value 2 added in newer kernels (the older
+spelling was `hidepid=2`, and a historical kernel typo printed
+`hidpid=2`). The verification parses the hidepid MODE VALUE semantically
+(0/1/2 vs off/ptraceable/invisible) and requires exactly value 2; the
+first run's spelling-only matcher refused a correct mount, which is
+precisely the kind of environment difference the gate exists to catch.
+
+### Container-validated results (Docker Desktop, WSL2 kernel, uid 1001, seccomp=unconfined)
+
+- **37/37 Step 4 tests PASS** (real Linux execution): /dev tmpfs private
+  (separate device, tmpfs fstype), exact 6-node inventory, per-node
+  identity (char type + exact major/minor + mode 0666), behavior
+  (null writable, zero readable, full ENOSPC + zero reads, random/
+  urandom readable, tty ENXIO-without-ctty), host /dev tree not exposed,
+  13 forbidden device paths absent, sandbox mknod → EPERM + inventory
+  unchanged, hostile workspace symlinks cannot influence /dev
+  construction, proc mount present/procfs/hidepid=2/nosuid-nodev-noexec,
+  host processes invisible (real host helper pid absent; only PID 1 in
+  the sandbox proc view), kernel-metadata files blocked or sanitized
+  (iomem zeroed addresses), /sys absent + sysfs-host symlink blocked,
+  mount propagation private (host mountinfo unchanged), failure
+  injections (dev mount, proc mount, wrong major/minor, unexpected
+  device, extra device, verification failure, /sys mounted) all REFUSE.
+- Command: `docker run -u 1001 --security-opt seccomp=unconfined ...
+  python3 -B -m unittest tests.unit.test_procdev`.
+- Same substrate caveat as Step 2: Docker's default seccomp profile
+  blocks CLONE_NEWUSER; `seccomp=unconfined` exercises OUR code. The
+  product's own filter is installed later (Step 13), inside its own
+  sandbox.
+
+### Native ubuntu CI (authoritative) — substrate limitation unchanged
+
+| Check | 3.11 | 3.12 |
+|---|---|---|
+| proc/dev/sys real-path tests | SKIPPED (substrate unavailable, recorded reason: setgroups deny EACCES — rootless mapping cannot be established on the runner) | same |
+| Host-side + fail-closed + failure-injection tests | PASS | PASS |
+| Skeleton / namespace / rootfs regression | PASS | PASS |
+| Seccomp regression gate + behavioral probe | PASS | PASS |
+
+Status preserved: rootless UID/GID mapping + filesystem boundary
+VERIFIED DOCKER; NOT VERIFIED NATIVE (recorded reason, never a false
+PASS); native fail-closed behavior VERIFIED.

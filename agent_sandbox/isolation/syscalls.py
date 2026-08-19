@@ -125,8 +125,22 @@ def getgid() -> int:
 MS_BIND = 0x1000
 MS_REC = 0x4000
 MS_PRIVATE = 0x40000
+MS_NOSUID = 0x2
+MS_NODEV = 0x4
+MS_NOEXEC = 0x8
 # umount2(2) flags
 MNT_DETACH = 0x2
+
+
+def makedev(major: int, minor: int) -> int:
+    """Linux dev_t encoding. The classic (major << 8) | minor encoding is
+    exact for majors and minors < 256, which covers every device node in
+    the minimal /dev inventory (and rejects out-of-range values loudly)."""
+    if not (0 <= major < 256 and 0 <= minor < 256):
+        raise NamespaceSetupError(
+            f"device number ({major}, {minor}) outside the classic dev_t "
+            "encoding - fail closed")
+    return (major << 8) | minor
 
 
 def unshare(flags: int) -> None:
@@ -158,3 +172,6 @@ def pivot_root(new_root: bytes, put_old: bytes) -> None:
     _check(_raw(_number("pivot_root"),
                 ctypes.c_char_p(new_root), ctypes.c_char_p(put_old)),
            "pivot_root")
+
+
+

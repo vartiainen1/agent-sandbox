@@ -261,13 +261,18 @@ class PivotRootTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_old_root_detached_host_paths_absent(self):
+        # Distinguish "absent" (host paths must NOT exist) from
+        # "present-but-isolated" (/proc and /dev are mounted by design in
+        # Step 4 - their isolation is verified in test_procdev.py):
         def fn(state, fs):
-            absent = {p: os.path.lexists(p) for p in fs_mod.MANDATORY_ABSENT_PATHS}
+            absent = {p: os.path.lexists(p) for p in fs_mod.HOST_ABSENT_PATHS}
             placeholders = {p: os.path.isdir(p) for p in ("/usr", "/bin", "/lib", "/etc")}
             tmp_is_tmpfs = os.stat("/tmp").st_dev != os.stat("/").st_dev
             return json.dumps({"absent": absent, "placeholders": placeholders,
                                "tmp_is_tmpfs": tmp_is_tmpfs,
-                               "workspace": os.path.isdir("/workspace")})
+                               "workspace": os.path.isdir("/workspace"),
+                               "proc_dir": os.path.isdir("/proc"),
+                               "dev_dir": os.path.isdir("/dev")})
 
         data = json.loads(_run(fn, self.rootfs))
         for p, present in data["absent"].items():
@@ -276,6 +281,9 @@ class PivotRootTests(unittest.TestCase):
             self.assertTrue(ok, f"rootfs placeholder {p} missing")
         self.assertTrue(data["tmp_is_tmpfs"])
         self.assertTrue(data["workspace"])
+        # /proc and /dev are mounted by design (present-but-isolated).
+        self.assertTrue(data["proc_dir"])
+        self.assertTrue(data["dev_dir"])
 
     @skip_unless_linux
     def test_host_source_unreachable_from_sandbox(self):
