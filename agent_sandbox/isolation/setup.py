@@ -39,6 +39,15 @@ the invariant is established (privileges.py). It precedes the seccomp
 install (Step 13): an unprivileged process may only load a filter after
 no_new_privs is set.
 
+Step 7 (capability reduction, S-009, ADR-008): PID 1 then drops the
+ENTIRE capability bounding set (PR_CAPBSET_DROP for every capability),
+clears the ambient set and clears effective/permitted/inheritable via
+capset, and verifies the kernel-state read-back (/proc/self/status
+CapBnd/CapEff/CapPrm/CapInh/CapAmb all zero) - the workload holds NO
+capabilities, including inside its own user namespace (the Step 5
+lo-toggle residual is resolved here: CAP_NET_ADMIN is gone). This
+happens AFTER no_new_privs (mandated order) and before the workload fn.
+
 PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
 1 can mount a procfs showing the sandbox's own processes) and runs the
 workload inside the new root; a failed or unverifiable boundary aborts
@@ -153,9 +162,12 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
                 net_mod.verify_deny_by_construction(
                     state.host_ns.get("net", ""))
                 # Step 6: no_new_privs established + kernel-state read-back
-                # verified BEFORE the workload fn - the workload cannot
+                # verified BEFORE the workload fn. Step 7: capability
+                # reduction (full bounding-set drop + cleared sets) after
+                # no_new_privs, verified by read-back. The workload cannot
                 # execute on an unverified privilege state (fail closed).
                 priv_mod.establish_and_verify()
+                priv_mod.reduce_and_verify()
             except BaseException as e:  # noqa: BLE001
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
@@ -477,11 +489,13 @@ def _privileges_probe_impl(config) -> StageCheck:
             os._exit(1)
         grand = os.fork()
         if grand == 0:
-            # PID 1: establish no_new_privs and verify the kernel-state
-            # read-back from inside the sandbox; report the verdict (the
-            # only verdict writer).
+            # PID 1: establish no_new_privs, then perform the capability
+            # reduction (full bounding-set drop + cleared sets) and verify
+            # both kernel-state read-backs from inside the sandbox; report
+            # the verdict (the only verdict writer).
             try:
                 priv_mod.establish_and_verify()
+                priv_mod.reduce_and_verify()
                 os.write(write_fd, b"OK")
             except BaseException as e:  # noqa: BLE001
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
@@ -501,8 +515,11 @@ def _privileges_probe_impl(config) -> StageCheck:
         return StageCheck(
             ok=True,
             reason="no_new_privs established and kernel-state read-back "
-                   "verified (PR_GET_NO_NEW_PRIVS == 1) in PID 1 of a "
-                   "real forked child")
+                   "verified (PR_GET_NO_NEW_PRIVS == 1); full capability "
+                   "bounding-set drop + cleared effective/permitted/"
+                   "inheritable/ambient sets verified (CapBnd/CapEff/"
+                   "CapPrm/CapInh/CapAmb all zero) in PID 1 of a real "
+                   "forked child")
     return StageCheck(
         ok=False, code=InitFailureCode.STAGE_FAILED,
         reason=msg or f"privileges probe child failed (status {status}) - "

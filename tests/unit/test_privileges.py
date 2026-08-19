@@ -52,6 +52,18 @@ def valid_config(workspace: str, mode: str = "hardened") -> dict:
     }
 
 
+# A /proc/self/status fragment with every capability set at zero (the
+# post-reduction state) - used by host-side parsing tests.
+ZERO_STATUS = (
+    "Name:\tpython\n"
+    "CapBnd:\t0000000000000000\n"
+    "CapEff:\t0000000000000000\n"
+    "CapPrm:\t0000000000000000\n"
+    "CapInh:\t0000000000000000\n"
+    "CapAmb:\t0000000000000000\n"
+)
+
+
 # Real-path capability gates (same discipline as the other suites).
 _ns_status: tuple[bool, str] | None = None
 
@@ -167,6 +179,145 @@ class NoNewPrivsHostTests(unittest.TestCase):
                                  syscalls.PR_GET_NO_NEW_PRIVS])
 
 
+class CapabilityReductionHostTests(unittest.TestCase):
+    """Step 7 host-side wrapper/verification logic - runs everywhere."""
+
+    def test_capset_syscall_number_matches_arch(self):
+        number = syscalls._number("capset")
+        if syscalls._arch() == "x86_64":
+            self.assertEqual(number, 126)
+        else:
+            self.assertEqual(number, 91)
+
+    def test_capability_prctl_constants(self):
+        self.assertEqual(syscalls.PR_CAPBSET_DROP, 24)
+        self.assertEqual(syscalls.PR_CAP_AMBIENT, 47)
+        self.assertEqual(syscalls.PR_CAP_AMBIENT_CLEAR_ALL, 4)
+        self.assertEqual(syscalls._LINUX_CAPABILITY_VERSION_3, 0x20080522)
+
+    def test_capset_negative_return_raises_oserror(self):
+        # Negative syscall return is NEVER success (ADR-001).
+        with unittest.mock.patch.object(syscalls, "_raw", return_value=-1):
+            with self.assertRaises(OSError):
+                syscalls.capset(syscalls._LINUX_CAPABILITY_VERSION_3,
+                                [(0, 0, 0), (0, 0, 0)])
+
+    def test_parse_cap_field(self):
+        # Values derived from the exact input substrings (never
+        # hand-counted hex), plus one small unambiguous pin (0x21).
+        self.assertEqual(
+            priv_mod._parse_cap_field(
+                "Name:\tpython\nCapBnd:\t0000000000000021\n", "CapBnd"),
+            0x21)
+        self.assertEqual(
+            priv_mod._parse_cap_field(
+                "Name:\tpython\nCapBnd:\t000001ffffffffff\n", "CapBnd"),
+            int("1ffffffffff", 16))
+        with self.assertRaises(NamespaceSetupError):
+            priv_mod._parse_cap_field("Name:\tpython\n", "CapBnd")
+
+    def test_drop_bounding_set_skips_invalid_caps(self):
+        # EINVAL = capability does not exist on this kernel -> skipped;
+        # the reduction must not fail closed on a smaller CAP_LAST_CAP.
+        calls: list[int] = []
+
+        def flaky(option, arg2=0, arg3=0, arg4=0, arg5=0):
+            calls.append(arg2)
+            if arg2 > 40:
+                raise OSError(22, "prctl: Invalid argument")
+            return 0
+
+        with unittest.mock.patch.object(priv_mod, "_prctl", flaky):
+            priv_mod.drop_bounding_set()
+        self.assertEqual(calls, list(range(64)))
+
+    def test_drop_bounding_set_failure_refuses(self):
+        def boom(option, arg2=0, arg3=0, arg4=0, arg5=0):
+            raise OSError(1, "prctl: Operation not permitted (simulated)")
+
+        with unittest.mock.patch.object(priv_mod, "_prctl", boom):
+            with self.assertRaises(NamespaceSetupError) as cm:
+                priv_mod.drop_bounding_set()
+        self.assertIn("cannot drop capability 0", str(cm.exception))
+        self.assertIn("fail closed", str(cm.exception))
+
+    def test_clear_ambient_failure_refuses(self):
+        def boom(option, arg2=0, arg3=0, arg4=0, arg5=0):
+            raise OSError(1, "prctl: Operation not permitted (simulated)")
+
+        with unittest.mock.patch.object(priv_mod, "_prctl", boom):
+            with self.assertRaises(NamespaceSetupError) as cm:
+                priv_mod.clear_ambient()
+        self.assertIn("cannot clear ambient capabilities", str(cm.exception))
+
+    def test_clear_capability_sets_failure_refuses(self):
+        def boom(version, data):
+            raise OSError(1, "capset: Operation not permitted (simulated)")
+
+        with unittest.mock.patch.object(priv_mod, "_capset", boom):
+            with self.assertRaises(NamespaceSetupError) as cm:
+                priv_mod.clear_capability_sets()
+        self.assertIn("cannot clear capability sets", str(cm.exception))
+
+    def test_verify_capability_reduction_ok(self):
+        with unittest.mock.patch.object(priv_mod, "_read_proc_status",
+                                        return_value=ZERO_STATUS):
+            state = priv_mod.verify_capability_reduction()
+        self.assertTrue(state.all_zero)
+        self.assertEqual(state.bounding, 0)
+        self.assertEqual(state.effective, 0)
+
+    def test_verify_readback_missing_field_refuses(self):
+        with unittest.mock.patch.object(priv_mod, "_read_proc_status",
+                                        return_value="Name:\tpython\n"):
+            with self.assertRaises(NamespaceSetupError) as cm:
+                priv_mod.verify_capability_reduction()
+        self.assertIn("CapBnd missing", str(cm.exception))
+
+    def test_verify_unexpected_capability_state_refuses(self):
+        # CapEff shows a residual capability (CAP_SETPCAP, bit 8) -> the
+        # reduction did not hold -> refusal, never a warning-and-continue.
+        fake = ZERO_STATUS.replace("CapEff:\t0000000000000000",
+                                   "CapEff:\t0000000000000100")
+        with unittest.mock.patch.object(priv_mod, "_read_proc_status",
+                                        return_value=fake):
+            with self.assertRaises(NamespaceSetupError) as cm:
+                priv_mod.verify_capability_reduction()
+        self.assertIn("CapEff = 0x100", str(cm.exception))
+        self.assertIn("fail closed", str(cm.exception))
+
+    def test_reduce_and_verify_orders_drop_then_clear_then_capset(self):
+        # Ordering pin: full bounding-set drop (PR_CAPBSET_DROP 0..63),
+        # THEN the ambient clear, THEN capset zeroes the sets - never a
+        # different order (the drop needs CAP_SETPCAP, which capset would
+        # remove if run first).
+        prctl_calls: list[int] = []
+        capset_calls: list = []
+
+        def spy_prctl(option, arg2=0, arg3=0, arg4=0, arg5=0):
+            prctl_calls.append((option, arg2))
+            return 0
+
+        def spy_capset(version, data):
+            capset_calls.append((version, data))
+
+        with unittest.mock.patch.object(priv_mod, "_prctl", spy_prctl), \
+             unittest.mock.patch.object(priv_mod, "_capset", spy_capset), \
+             unittest.mock.patch.object(priv_mod, "_read_proc_status",
+                                        return_value=ZERO_STATUS):
+            state = priv_mod.reduce_and_verify()
+        self.assertEqual(prctl_calls[:64],
+                         [(priv_mod.PR_CAPBSET_DROP, c) for c in range(64)])
+        self.assertEqual(prctl_calls[64:],
+                         [(priv_mod.PR_CAP_AMBIENT,
+                           priv_mod.PR_CAP_AMBIENT_CLEAR_ALL)])
+        self.assertEqual(len(capset_calls), 1)
+        self.assertEqual(capset_calls[0][0],
+                         syscalls._LINUX_CAPABILITY_VERSION_3)
+        self.assertEqual(capset_calls[0][1], [(0, 0, 0), (0, 0, 0)])
+        self.assertTrue(state.all_zero)
+
+
 class NoNewPrivsBoundaryTests(unittest.TestCase):
     """The no_new_privs invariant INSIDE the sandbox (real Linux)."""
 
@@ -273,6 +424,103 @@ class NoNewPrivsBoundaryTests(unittest.TestCase):
         self.assertIn("read-back is 2, expected 1", run.output)
 
 
+class CapabilityReductionBoundaryTests(unittest.TestCase):
+    """The Step 7 capability state INSIDE the sandbox (real Linux)."""
+
+    def setUp(self):
+        _require_ns(self)
+        self._marker_dir = tempfile.mkdtemp(prefix="as-cap-")
+        self.addCleanup(shutil.rmtree, self._marker_dir, True)
+
+    @skip_unless_linux
+    def test_capability_reduction_verified_inside_sandbox(self):
+        # At workload time (after the full PID-1 chain) every capability
+        # set must read back zero AND no_new_privs must still be set -
+        # the Step 6+7 ordering evidence in one view.
+        def fn(state):
+            st = priv_mod._read_proc_status()
+            fields = {f: priv_mod._parse_cap_field(st, f)
+                      for f in priv_mod._CAP_STATUS_FIELDS}
+            fields["nnp"] = priv_mod._prctl(priv_mod.PR_GET_NO_NEW_PRIVS)
+            return json.dumps(fields)
+
+        run = setup.run_in_sandbox(fn)
+        self.assertEqual(run.exit_code, 0, run.output)
+        data = json.loads(run.output.strip())
+        for f in priv_mod._CAP_STATUS_FIELDS:
+            self.assertEqual(data[f], 0,
+                             f"{f} must be zero after capability reduction")
+        self.assertEqual(data["nnp"], 1,
+                         "no_new_privs must still be set at workload time")
+
+    @skip_unless_linux
+    def test_required_capabilities_absent_from_bounding_set(self):
+        # The architecture-named forbidden capabilities (ADR-008) must be
+        # absent from the sandbox's bounding set, bit by bit.
+        def fn(state):
+            bnd = priv_mod._parse_cap_field(
+                priv_mod._read_proc_status(), "CapBnd")
+            named = {"cap_dac_override": priv_mod.CAP_DAC_OVERRIDE,
+                     "cap_net_admin": priv_mod.CAP_NET_ADMIN,
+                     "cap_sys_module": priv_mod.CAP_SYS_MODULE,
+                     "cap_sys_rawio": priv_mod.CAP_SYS_RAWIO,
+                     "cap_sys_ptrace": priv_mod.CAP_SYS_PTRACE,
+                     "cap_sys_admin": priv_mod.CAP_SYS_ADMIN}
+            return json.dumps({name: (bnd >> bit) & 1
+                               for name, bit in named.items()})
+
+        run = setup.run_in_sandbox(fn)
+        self.assertEqual(run.exit_code, 0, run.output)
+        data = json.loads(run.output.strip())
+        for name, present in data.items():
+            self.assertEqual(present, 0,
+                             f"{name} must be absent from the bounding set")
+
+    @skip_unless_linux
+    def test_workload_not_executed_when_capability_reduction_fails(self):
+        # The capability step failing must refuse BEFORE the workload fn:
+        # its marker must not appear anywhere on the host.
+        marker = str(pathlib.Path(self._marker_dir) / "ran-cap.txt")
+
+        def boom_reduce():
+            raise priv_mod.NamespaceSetupError(
+                "cannot clear capability sets (capset): simulated")
+
+        def fn(state):
+            pathlib.Path(marker).write_text("ran\n")
+            return "WORKLOAD RAN"
+
+        with unittest.mock.patch.object(priv_mod, "reduce_and_verify",
+                                        boom_reduce):
+            run = setup.run_in_sandbox(fn)
+        self.assertNotEqual(run.exit_code, 0)
+        self.assertNotIn("WORKLOAD RAN", run.output)
+        self.assertFalse(os.path.exists(marker),
+                         "workload executed despite capability reduction "
+                         "failure")
+        self.assertIn("cannot clear capability sets", run.output)
+
+    @skip_unless_linux
+    def test_unexpected_capability_state_refuses_at_workload_time(self):
+        # The read-back at verify time shows a residual capability ->
+        # refusal; the workload never runs on an unverified state.
+        marker = str(pathlib.Path(self._marker_dir) / "ran-cap-verify.txt")
+        fake = ZERO_STATUS.replace("CapEff:\t0000000000000000",
+                                   "CapEff:\t0000000000000100")
+
+        def fn(state):
+            pathlib.Path(marker).write_text("ran\n")
+            return "WORKLOAD RAN"
+
+        with unittest.mock.patch.object(priv_mod, "_read_proc_status",
+                                        return_value=fake):
+            run = setup.run_in_sandbox(fn)
+        self.assertNotEqual(run.exit_code, 0)
+        self.assertNotIn("WORKLOAD RAN", run.output)
+        self.assertFalse(os.path.exists(marker))
+        self.assertIn("CapEff", run.output)
+
+
 class PrivilegesProbeTests(unittest.TestCase):
     @skip_unless_linux
     def test_privileges_probe_ok(self):
@@ -284,6 +532,38 @@ class PrivilegesProbeTests(unittest.TestCase):
         self.assertTrue(check.ok, check.reason)
         self.assertIn("no_new_privs", check.reason)
         self.assertIn("read-back", check.reason)
+        self.assertIn("bounding-set drop", check.reason)
+
+    @skip_unless_linux
+    def test_privileges_probe_capset_failure_refuses(self):
+        _require_ns(self)
+        src = tempfile.mkdtemp(prefix="as-nnp-ws-")
+        self.addCleanup(shutil.rmtree, src, True)
+        cfg = RuntimeConfig.from_dict(valid_config(src))
+
+        def boom(version, data):
+            raise OSError(1, "capset: Operation not permitted (simulated)")
+
+        with unittest.mock.patch.object(priv_mod, "_capset", boom):
+            check = setup._privileges_probe_impl(cfg)
+        self.assertFalse(check.ok)
+        self.assertEqual(check.code, InitFailureCode.STAGE_FAILED)
+        self.assertIn("cannot clear capability sets", check.reason)
+
+    @skip_unless_linux
+    def test_privileges_probe_capability_verify_failure_refuses(self):
+        _require_ns(self)
+        src = tempfile.mkdtemp(prefix="as-nnp-ws-")
+        self.addCleanup(shutil.rmtree, src, True)
+        cfg = RuntimeConfig.from_dict(valid_config(src))
+        fake = ZERO_STATUS.replace("CapEff:\t0000000000000000",
+                                   "CapEff:\t0000000000000100")
+        with unittest.mock.patch.object(priv_mod, "_read_proc_status",
+                                        return_value=fake):
+            check = setup._privileges_probe_impl(cfg)
+        self.assertFalse(check.ok)
+        self.assertEqual(check.code, InitFailureCode.STAGE_FAILED)
+        self.assertIn("CapEff", check.reason)
 
     @skip_unless_linux
     def test_privileges_probe_setup_failure_refuses(self):
