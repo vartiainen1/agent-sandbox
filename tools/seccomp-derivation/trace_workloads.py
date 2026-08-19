@@ -73,17 +73,27 @@ def run_workload(name: str, argv: list[str]) -> tuple[int, Counter, dict]:
     return proc.returncode, counts, argdetail
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--workload", help="run only this workload name")
-    ap.add_argument("--out", default="trace-results.json", help="output JSON path")
-    args = ap.parse_args()
+def _platform_is_windows() -> bool:
+    """Patchable by tests; kept separate from argparse so a fail-closed
+    check never triggers platform-dependent imports (see the 3.12 _winapi
+    incident in freebuff-errors.txt)."""
+    return sys.platform.startswith("win")
 
-    if sys.platform.startswith("win"):
+
+def main() -> int:
+    # Fail closed FIRST: refuse non-Linux before any argparse construction
+    # (argparse lazily imports shutil, which on 3.12 imports _winapi when
+    # sys.platform looks like Windows).
+    if _platform_is_windows():
         print("ERROR: tracing requires Linux (strace). Run inside the derivation "
               "container (see Dockerfile) or natively on Linux/CI.",
               file=sys.stderr)
         return 2
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--workload", help="run only this workload name")
+    ap.add_argument("--out", default="trace-results.json", help="output JSON path")
+    args = ap.parse_args()
 
     for name in ("strace",):
         if subprocess.run(["which", name], capture_output=True).returncode != 0:

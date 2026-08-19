@@ -93,10 +93,13 @@ check("BPF default action is EPERM", prog.filter[prog.len - 2].k == (0x00050000 
 check("probe ALLOWED matches artifact", set(probe.ALLOWED) == set(allow))
 
 # --- fail-closed guard (tracer refuses non-Linux) ---
+# NOTE: patch the helper, never sys.platform globally - patching sys.platform
+# makes CPython 3.12's argparse lazily import shutil, which then imports
+# _winapi on Linux (logged in freebuff-errors.txt, 2026-08-19).
 import unittest.mock
 old_argv = sys.argv
 sys.argv = ["trace_workloads.py"]
-with unittest.mock.patch("sys.platform", "win32"):
+with unittest.mock.patch.object(trace_workloads, "_platform_is_windows", return_value=True):
     rc = trace_workloads.main()
 sys.argv = old_argv
 check("tracer fails closed on non-Linux (exit 2)", rc == 2)
