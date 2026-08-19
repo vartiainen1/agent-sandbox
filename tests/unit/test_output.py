@@ -13,9 +13,9 @@ Categories (kept separate, per the charter):
   filter) - gated on the real namespace+filesystem probes succeeding on
   this substrate (native 24.04 runner: SKIPPED with recorded reason;
   Docker uid 1001: VERIFIED DOCKER).
-- The EXECUTION stage guard still does NOT register (items 19-20 -
-  timeout, process-tree cleanup - are outstanding), so the isolated
-  modes keep refusing at EXECUTION (fail closed); pinned by the
+- The EXECUTION stage guard registers only when the complete execution
+  stage exists (Steps 13-15, items 18-21: bounded output, timeout,
+  process-tree containment, cleanup verification) - asserted by the
   skeleton/real-chain tests, not duplicated here.
 """
 

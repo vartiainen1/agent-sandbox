@@ -84,8 +84,8 @@ TERM - the host environment is NEVER inherited), replaces the process
 environment and verifies the LIVE environment (exactly the allowlisted
 variables with exactly the approved values, no host variable present)
 after the cgroup join and BEFORE the workload fn (environment.py). The
-ENVIRONMENT stage registers; HARDENED/RESTRICTED advance past it to the
-next unimplemented stage (EXECUTION) and refuse there.
+ENVIRONMENT stage registers; HARDENED/RESTRICTED advance past it to
+EXECUTION (Steps 13-15).
 
 Step 12 (credential/socket isolation, S-003/S-004, ADR-009): from the
 WORKLOAD view (rootfs path only) no host credential/control-socket path
@@ -96,10 +96,7 @@ ENVIRONMENT stage (Steps 16-17).
 
 Step 13 (bounded output, S-037, item 18): the supervisor reads
 stdout/stderr through a bounded pipe; past the limit it terminates the
-session with a truncation notice (output.py). This is the first EXECUTION
-stage mechanism - the stage guard still does NOT register until items
-19-20 (timeout, process-tree cleanup) land, so isolated modes keep
-refusing at EXECUTION (fail closed).
+session with a truncation notice (output.py).
 
 Step 14 (external timeout, S-036, ADR-011, item 19): the supervisor
 enforces an external wall-clock deadline (wall_time_seconds - the
@@ -109,9 +106,22 @@ time.monotonic, both supervisor-side), and on expiry the supervisor
 terminates the session and marks SandboxRun.timed_out with a timeout
 notice (timeout.py). The deadline lives entirely in the supervisor - the
 workload cannot disable, evade, or reset it (no shared clock, no caps,
-no channel). The EXECUTION guard still does NOT register (item 20 -
-process-tree containment - remains), so isolated modes keep refusing at
-EXECUTION (fail closed).
+no channel).
+
+Step 15 (process-tree containment and cleanup, S-014/S-038, ADR-011,
+item 20): the supervisor is a CHILD SUBREAPER (PR_SET_CHILD_SUBREAPER,
+verified by kernel-state read-back), termination targets SANDBOX PID 1
+- the namespace init, so the kernel terminates the WHOLE workload tree
+(vfork/exec descendants included) - plus cgroup.kill where delegated,
+and after EVERY run path (normal completion, truncation, timeout) the
+supervisor performs MANDATORY absence verification (S-038: no workload
+process may remain; a survivor is a recorded cleanup failure in
+SandboxRun.cleanup_failure, never a silent success) (lifecycle.py).
+Killing only the immediate child is forbidden (ADR-011). Completes the
+EXECUTION stage (items 18-21: bounded output, timeout, process-tree
+containment, cleanup verification) - the EXECUTION guard registers
+below and the isolated modes initialize to READY when every mechanism
+is established.
 
 PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
 1 can mount a procfs showing the sandbox's own processes) and runs the
@@ -137,6 +147,7 @@ from agent_sandbox.isolation import cgroups as cgroups_mod
 from agent_sandbox.isolation import credentials as cred_mod
 from agent_sandbox.isolation import environment as env_mod
 from agent_sandbox.isolation import filesystem as fs_mod
+from agent_sandbox.isolation import lifecycle as lifecycle_mod
 from agent_sandbox.isolation import output as output_mod
 from agent_sandbox.isolation import timeout as timeout_mod
 from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, resources as resources_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
@@ -170,6 +181,10 @@ class SandboxRun:
     timed_out: bool = False  # S-036: True iff the external wall-clock
                              # deadline expired and the supervisor
                              # terminated the session
+    cleanup_failure: str = ""  # S-038: non-empty iff post-termination
+                               # absence verification found a surviving
+                               # workload process - never reported as
+                               # successful (S-024)
 
 
 def enter_all_namespaces() -> NamespaceState:
@@ -231,16 +246,34 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     workload cannot disable, evade, or reset it (no shared clock, no
     caps, no channel).
 
+    With ``cgroup_session`` (Step 15): the supervisor is a child
+    subreaper (S-014) and, on termination, kills the SANDBOX PID 1 (the
+    namespace init - kernel then kills the whole namespace) plus
+    cgroup.kill where delegated, then verifies absence (S-038): no
+    workload process may remain. Killing only the immediate child is
+    forbidden (ADR-011).
+
     The supervisor stays outside; the kernel enforces the boundary for
     fn's whole process tree. Any boundary failure aborts BEFORE fn runs
     (fail closed - fn never executes on a partial boundary)."""
+    # Step 15 (S-014): the supervisor becomes a child subreaper so
+    # orphaned workload descendants reparent to it, not to init - the
+    # precondition for reliable process-tree cleanup. Verified by
+    # kernel-state read-back (PR_GET_CHILD_SUBREAPER == 1); failure
+    # refuses (containment cannot be guaranteed).
+    lifecycle_mod.establish_subreaper()
     out_r, out_w = os.pipe()
+    # Control pipe: child A reports sandbox PID 1 (the grandchild that
+    # becomes the namespace init) so the supervisor can terminate the
+    # WHOLE workload tree - never just the immediate child (S-014).
+    ctl_r, ctl_w = os.pipe()
     pid = os.fork()
     if pid == 0:
         # Child A: enters the namespaces, establishes the filesystem
         # boundary (if a rootfs is given), then forks so its child becomes
         # PID 1 of the new PID namespace (documented PID semantics).
         os.close(out_r)
+        os.close(ctl_r)
         try:
             # Step 8: build the seccomp program host-side BEFORE entering
             # the boundary - the allowlist artifact is not reachable
@@ -259,6 +292,9 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             os.dup2(out_w, 1)
             os.dup2(out_w, 2)
             os.close(out_w)
+            # Child B inherits ctl_w from child A (child A closed ctl_r
+            # BEFORE forking grand, so ctl_r was never inherited here).
+            os.close(ctl_w)
             # PID 1 mounts + verifies the sandbox proc view FIRST (/proc
             # with hidepid=2 - a procfs mount shows the PID namespace of
             # the process that mounts it, so only PID 1 can show the
@@ -325,12 +361,25 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 print(f"FAIL workload: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
                 os._exit(1)
-        # Child A: wait for PID 1, exit with its status.
+        # Child A: report sandbox PID 1 to the supervisor, then wait for
+        # it and exit with its status.
+        os.write(ctl_w, str(grand).encode())
+        os.close(ctl_w)
         _, status = os.waitpid(grand, 0)
         os._exit(os.waitstatus_to_exitcode(status))
 
-    # Supervisor side: collect output, reap the controlled child.
+    # Supervisor side: learn sandbox PID 1 (the namespace init - the
+    # whole workload tree), collect output, reap, verify absence.
     os.close(out_w)
+    os.close(ctl_w)
+    try:
+        raw = os.read(ctl_r, 64)
+    finally:
+        os.close(ctl_r)
+    try:
+        sandbox_pid1 = int(raw.strip().split()[0])
+    except (ValueError, IndexError):
+        sandbox_pid1 = -1  # child A died before reporting - fail closed
     bound = output_mb if output_mb is not None else (
         limits.output_mb if limits is not None else None)
     if bound is None:
@@ -342,38 +391,78 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 break
             output += chunk
         _, status = os.waitpid(pid, 0)
-        return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
-                          output=output.decode(errors="replace"))
+        return _finish_run(status, output.decode(errors="replace"),
+                           sandbox_pid1, cgroup_session)
     # S-037 (Step 13) + S-036 (Step 14): bounded read with an external
     # wall-clock deadline. On truncation OR timeout the supervisor
-    # terminates the session (closes the read end + kills the controlled
-    # child - further workload writes then fail with EPIPE/SIGPIPE). The
+    # terminates the session (closes the read end + kills the SANDBOX
+    # PID 1 - the namespace init, so the kernel kills the WHOLE workload
+    # tree, S-014). Further workload writes fail with EPIPE/SIGPIPE. The
     # workload cannot bypass the bound or the deadline: the pipe is the
     # only channel, and the deadline lives only in this supervisor
     # process.
     wall = wall_time_seconds if wall_time_seconds is not None else (
         limits.wall_time_seconds if limits is not None else None)
     limit_bytes = bound * output_mod.MIB
+    # Step 15: the termination target is SANDBOX PID 1 (the namespace
+    # init), never the immediate child - killing the init makes the
+    # kernel terminate the entire namespace (S-014, ADR-011).
+    kill_target = sandbox_pid1 if sandbox_pid1 >= 1 else pid
     if wall is None:
         # Bound-only call (Step 13 test seam): no deadline configured.
         data, truncated = output_mod.collect_bounded(
-            out_r, pid, limit_bytes)
+            out_r, kill_target, limit_bytes)
         _, status = os.waitpid(pid, 0)
         text = data.decode(errors="replace")
         if truncated:
             text += output_mod.truncation_notice(bound)
-        return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
-                          output=text, truncated=truncated)
+        return _finish_run(status, text, sandbox_pid1, cgroup_session,
+                           truncated=truncated)
     data, truncated, timed_out = timeout_mod.collect_session_output(
-        out_r, pid, limit_bytes, wall)
+        out_r, kill_target, limit_bytes, wall)
     _, status = os.waitpid(pid, 0)
     text = data.decode(errors="replace")
     if truncated:
         text += output_mod.truncation_notice(bound)
     if timed_out:
         text += timeout_mod.timeout_notice(wall)
+    return _finish_run(status, text, sandbox_pid1, cgroup_session,
+                       truncated=truncated, timed_out=timed_out)
+
+
+def _finish_run(status: int, text: str, sandbox_pid1: int,
+                cgroup_session, truncated: bool = False,
+                timed_out: bool = False) -> SandboxRun:
+    """Supervisor-side completion of every run path (S-014, S-038):
+
+    1. When the session was terminated (truncation/timeout) or the
+       workload exited leaving the namespace, the supervisor VERIFIES
+       from kernel-visible state that no workload process remains - the
+       sandbox PID namespace must have no member processes and, where
+       delegated, the session cgroup.procs must be empty.
+    2. A surviving workload process is a CLEANUP FAILURE (S-038) -
+       detected, recorded, and reported in ``SandboxRun.cleanup_failure``;
+       never reported as a successful cleanup (S-024).
+
+    The namespace-init kill already happened in the collection path (or
+    the workload exited normally - PID 1 exit also terminates the
+    namespace); this is the mandatory absence verification on top.
+    """
+    cleanup_failure = ""
+    if sandbox_pid1 >= 1:
+        # Belt-and-braces: cgroup.kill where delegated (kills every
+        # process in the cgroup regardless of parentage, ADR-011).
+        lifecycle_mod.terminate_tree(sandbox_pid1, cgroup_session,
+                                     grace=0.0)
+        survivors, reason = lifecycle_mod.verify_no_workload_remains(
+            sandbox_pid1, cgroup_session)
+        if survivors or reason:
+            cleanup_failure = reason or (
+                "cleanup incomplete: workload process(es) survive after "
+                "termination - S-038, never reported as successful")
     return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
-                      output=text, truncated=truncated, timed_out=timed_out)
+                      output=text, truncated=truncated,
+                      timed_out=timed_out, cleanup_failure=cleanup_failure)
 
 
 def _pid1_verification(state: NamespaceState) -> str:
@@ -958,6 +1047,107 @@ def _environment_guard(config) -> StageCheck:
     return environment_probe(config)
 
 
+def execution_probe(config) -> StageCheck:
+    """Real-path probe of the EXECUTION mechanisms (Steps 13-15, items
+    18-21): bounded output with session termination (S-037), external
+    wall-clock deadline with session termination (S-036), and
+    child-subreaper process-tree containment (S-014/S-038). These are
+    SUPERVISOR-side mechanisms, so the probe exercises the real
+    machinery in forked children (a flooding workload truncated and
+    terminated by the real bounded read, a silent workload terminated
+    on deadline expiry by the real timer, both reaped) - the
+    supervisor's own state changes only by the intended, idempotent
+    subreaper flag. This is the EXECUTION stage guard's evidence."""
+    return _execution_probe_impl(config)
+
+
+def _execution_probe_impl(config) -> StageCheck:
+    if not _security_init._is_linux() or not hasattr(os, "fork"):
+        return StageCheck(
+            ok=False, code=InitFailureCode.PLATFORM_UNSUPPORTED,
+            reason="execution probe requires Linux with os.fork (fail "
+                   "closed - the supervisor-side enforcement machinery "
+                   "cannot be exercised here)")
+    problems: list[str] = []
+    # 1. Child subreaper (S-014): set + kernel-state read-back - the
+    #    precondition for reliable process-tree containment.
+    try:
+        lifecycle_mod.establish_subreaper()
+    except NamespaceSetupError as e:
+        problems.append(f"child subreaper: {e}")
+    # 2. Bounded output (S-037): a flooding child must be truncated and
+    #    the session terminated (the flooder must not survive).
+    try:
+        r, w = os.pipe()
+        flooder = os.fork()
+        if flooder == 0:
+            os.close(r)
+            payload = b"F" * 65536
+            try:
+                while True:
+                    os.write(w, payload)
+            except OSError:
+                pass
+            os._exit(0)
+        os.close(w)
+        data, truncated = output_mod.collect_bounded(
+            r, flooder, 64 * output_mod.KIB)
+        _, status = os.waitpid(flooder, 0)
+        if not truncated:
+            problems.append(
+                "bounded output: limit not enforced (no truncation)")
+        if os.waitstatus_to_exitcode(status) == 0:
+            problems.append(
+                "bounded output: flooder completed normally - session "
+                "not terminated")
+    except BaseException as e:  # noqa: BLE001 - a probe failure is a refusal
+        problems.append(f"bounded output: {type(e).__name__}: {e}")
+    # 3. External deadline (S-036): a silent child must be terminated on
+    #    expiry - the deadline aborts the session, never a status flag.
+    try:
+        r, w = os.pipe()
+        silent = os.fork()
+        if silent == 0:
+            os.close(r)
+            os.close(w)
+            while True:
+                pass
+        # The supervisor holds w open: EOF can never arrive - only the
+        # deadline can end this session.
+        data, truncated, timed_out = timeout_mod.collect_session_output(
+            r, silent, 64 * output_mod.KIB, wall_time_seconds=1)
+        os.close(w)
+        _, status = os.waitpid(silent, 0)
+        if not timed_out:
+            problems.append(
+                "external deadline: not enforced (no timeout)")
+        if os.waitstatus_to_exitcode(status) == 0:
+            problems.append(
+                "external deadline: silent child completed normally - "
+                "session not terminated")
+    except BaseException as e:  # noqa: BLE001 - a probe failure is a refusal
+        problems.append(f"external deadline: {type(e).__name__}: {e}")
+    if problems:
+        return StageCheck(
+            ok=False, code=InitFailureCode.STAGE_FAILED,
+            reason="execution mechanism probe failed: " + "; ".join(problems))
+    return StageCheck(
+        ok=True,
+        reason="bounded output (S-037), external deadline (S-036) and child "
+               "subreaper containment (S-014) exercised on the real "
+               "supervisor path: a flooding workload was truncated and "
+               "terminated, a silent workload was terminated on deadline "
+               "expiry, and the supervisor is a verified child subreaper "
+               "(EXECUTION complete, items 18-21)")
+
+
+def _execution_guard(config) -> StageCheck:
+    """EXECUTION stage guard (registered below). Probes the real
+    supervisor-side enforcement machinery; HARDENED/RESTRICTED refuse
+    unless the mechanisms are established and verified."""
+    return execution_probe(config)
+
+
 # Register the guards with the enforcement core. This module is imported
 # lazily by SecurityInitializer (and directly by tests), so the registry
 # sees each mechanism exactly when it exists - never before.
@@ -968,3 +1158,4 @@ _security_init.register_stage_guard(InitStage.PRIVILEGES, _privileges_guard)
 _security_init.register_stage_guard(InitStage.SECCOMP, _seccomp_guard)
 _security_init.register_stage_guard(InitStage.RESOURCES, _resources_guard)
 _security_init.register_stage_guard(InitStage.ENVIRONMENT, _environment_guard)
+_security_init.register_stage_guard(InitStage.EXECUTION, _execution_guard)

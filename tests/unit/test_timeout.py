@@ -23,6 +23,10 @@ Categories (kept separate, per the charter):
   filter) - gated on the real namespace+filesystem probes succeeding on
   this substrate (native 24.04 runner: SKIPPED with recorded reason;
   Docker uid 1001: VERIFIED DOCKER).
+- The EXECUTION stage (items 18-21) completes with Step 15 (process-tree
+  containment + cleanup verification); the guard registration and the
+  READY transition are asserted by the skeleton/real-chain tests, not
+  duplicated here.
 """
 
 from __future__ import annotations

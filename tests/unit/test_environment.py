@@ -297,14 +297,17 @@ class EnvIntegrationTests(unittest.TestCase):
     """Full real chain through the fail-closed initializer."""
 
     @skip_unless_linux
-    def test_restricted_real_chain_advances_to_execution(self):
-        # RESTRICTED completes RESOURCES (rlimits only, ADR-007) and
-        # ENVIRONMENT (sanitization, Step 11) and refuses at the next
-        # unimplemented stage (EXECUTION). Fail closed; never a pass.
-        # Substrate gate: the REAL chain must be able to establish the
-        # namespaces/filesystem first (native runner: skipped with the
-        # recorded setgroups/AppArmor reason - the refusal-point
-        # assertion is only meaningful where the boundary can form).
+    def test_restricted_real_chain_completes_to_ready(self):
+        # RESTRICTED completes RESOURCES (rlimits only, ADR-007),
+        # ENVIRONMENT (sanitization, Steps 11-12) and EXECUTION (Steps
+        # 13-15: bounded output, timeout, process-tree containment +
+        # cleanup verification) and initializes to READY - the workload
+        # MAY execute. Fail closed on any mechanism failure is asserted
+        # by the sibling tests. Substrate gate: the REAL chain must be
+        # able to establish the namespaces/filesystem first (native
+        # runner: skipped with the recorded setgroups/AppArmor reason -
+        # the completion assertion is only meaningful where the
+        # boundary can form).
         from tests.unit import test_resources as tr
         tr._require_fs(self)
         src = tempfile.mkdtemp(prefix="as-env-int-")
@@ -315,10 +318,9 @@ class EnvIntegrationTests(unittest.TestCase):
         with unittest.mock.patch.object(init_mod, "_is_linux",
                                         return_value=True):
             result = SecurityInitializer(cfg).initialize()
-        self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.EXECUTION)
-        self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertIn("no implementation", result.failure.reason)
+        self.assertTrue(result.ok, result.describe())
+        self.assertEqual(result.stage, InitStage.READY)
+        self.assertIsNone(result.failure)
 
     @skip_unless_linux
     def test_environment_probe_failure_refuses_real_chain(self):

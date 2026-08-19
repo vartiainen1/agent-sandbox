@@ -47,7 +47,7 @@ class InitStage(str, enum.Enum):
     SECCOMP = "seccomp"                    # mechanism: derived 45-syscall filter (Step 13)
     RESOURCES = "resources"                # mechanism: rlimits + cgroups v2 (Steps 14-15)
     ENVIRONMENT = "environment"            # mechanism: env sanitization, credentials/sockets (Steps 16-17)
-    EXECUTION = "execution"                # mechanism: bounded output, timeout, process tree (Steps 18-20)
+    EXECUTION = "execution"                # mechanism: bounded output, timeout, process tree, cleanup verification (Steps 18-21)
     READY = "ready"                        # terminal success marker - workload may execute
 
 

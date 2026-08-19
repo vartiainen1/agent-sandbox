@@ -967,3 +967,71 @@ creates itself, or stall mid-output - the hang is legal under the filter.
   20 - process-tree containment/cleanup - outstanding), so isolated
   modes keep refusing at EXECUTION; rootless cgroup enforcement remains
   the Step 10 open item.
+
+## Phase 1 Step 15 — process-tree containment and cleanup (2026-08-19)
+
+Mechanism implemented (S-014, S-038, ADR-011, ARCHITECTURE section 6/13,
+item 20): the supervisor is a CHILD SUBREAPER (PR_SET_CHILD_SUBREAPER,
+verified by kernel-state read-back); termination targets SANDBOX PID 1 —
+the namespace init, so the kernel terminates the WHOLE workload tree
+(vfork/exec descendants included) — plus `cgroup.kill` where delegated;
+after EVERY run path the supervisor performs MANDATORY absence
+verification (S-038: no workload process may remain; a survivor is
+recorded in `SandboxRun.cleanup_failure`, never reported as success,
+S-024). Killing only the immediate child is explicitly forbidden
+(ADR-011). Completes the EXECUTION stage (items 18–21: bounded output,
+timeout, process-tree containment, cleanup verification); the EXECUTION
+guard registers and the isolated modes initialize to READY on a capable
+substrate.
+
+### Step 15 evidence
+
+- **HOST-SIDE VERIFIED (Windows 357 OK / 159 substrate skips):**
+  subreaper set + kernel-state read-back; set failure and read-back
+  mismatch fail closed; namespace-inode parsing; /proc membership scan
+  (exact-entry matching); tree termination targets sandbox PID 1 (never
+  just the immediate child); already-gone PID 1 tolerated; cgroup.kill
+  belt-and-braces; absence verification (no survivors OK; survivors
+  detected and reported with S-038 reason; namespace init gone == nothing
+  remains; non-empty cgroup.procs reported).
+- **DOCKER VERIFIED (uid 1001, real sandbox under the ACTUAL filter,
+  real subreaper + real namespace-init kill):** supervisor is a real
+  child subreaper after a run; normal completion leaves no workload
+  process (cleanup_failure == ""); a hanging workload with a live vfork
+  descendant (spin child — no syscalls, survives the filter) times out
+  and the WHOLE tree is killed with no survivors; a flooding workload
+  with a live vfork descendant hits the output bound and the whole tree
+  is terminated with no survivors — the kernel namespace-init kill
+  catches the descendant even though the supervisor never saw its PID.
+- **NATIVE VERIFIED**: host-side logic + fail-closed behavior; the
+  real sandbox path remains NOT VERIFIED NATIVE (recorded
+  AppArmor/setgroups substrate reason).
+- **EXECUTION GUARD**: registered (items 18–21 complete). The real-path
+  probe exercises the supervisor machinery (subreaper set + read-back;
+  flooding child truncated + terminated; silent child terminated on
+  deadline expiry; both reaped). On a capable substrate HARDENED/
+  RESTRICTED initialize to READY (asserted by the real-chain tests);
+  on substrates where an earlier mandatory mechanism cannot be
+  established they refuse at the first unavailable one — never a
+  silent downgrade.
+- **SEPARATION**: no syscall added — prctl/setpgid-free supervisor-side
+  machinery; `vfork`/`write`/`read` were already allowlisted; gate
+  remains exactly 45.
+- **INVARIANTS PRESERVED**: NoNewPrivs=1, cap sets zero, filter
+  installed, rlimits enforced, cgroup controls preserved where delegated,
+  six-variable env intact, credential/socket boundary intact, bounded
+  output + timeout intact.
+
+### Step 15 labels
+
+- **DESIGN INTENT** (S-014/S-038, ADR-011): namespace-init kill +
+  subreaper + cgroup.kill + mandatory absence verification; killing only
+  the parent is forbidden.
+- **DOCKER VERIFIED**: whole-tree termination and absence verification
+  under the actual filter with live vfork descendants.
+- **NATIVE VERIFIED**: host-side logic + fail-closed; sandbox-internal
+  path NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: native rootless sandbox-internal execution
+  remains NOT VERIFIED (Step 2/10 open items, unchanged); the minimal
+  successful workload demonstration (item 22) and CLI/MCP integration
+  remain later steps.
