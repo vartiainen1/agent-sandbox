@@ -907,3 +907,63 @@ keep refusing at EXECUTION (fail closed).
   19-20 - external timeout, process-tree cleanup - outstanding), so
   isolated modes keep refusing at EXECUTION; rootless cgroup enforcement
   remains the Step 10 open item.
+## Phase 1 Step 14 — external timeout enforcement results (2026-08-19)
+
+Policy (S-036, ADR-011, ARCHITECTURE section 13, T-034): timeouts are
+enforced EXTERNALLY by the supervisor and cannot be disabled by the
+workload. The deadline value is the validated config `wall_time_seconds`
+(default 900, ResourceLimits, >= 1) - no guessed value was introduced.
+
+Mechanism (`isolation/timeout.py`): the supervisor enforces the deadline
+while collecting the bounded output pipe: each wait is bounded by the
+remaining time (select + time.monotonic, both supervisor-side); on
+expiry the supervisor terminates the session (closes the read end +
+kills the controlled child - further workload writes fail with
+EPIPE/SIGPIPE) and marks `SandboxRun.timed_out` with a deterministic
+timeout notice. The deadline lives entirely in the supervisor process -
+the workload cannot disable, evade, or reset it (no shared clock, no
+capabilities, no channel). The EXECUTION stage guard still does NOT
+register (item 20 - process-tree containment - is outstanding), so the
+isolated modes keep refusing at EXECUTION (fail closed).
+
+Note: the workload cannot sleep (nanosleep is NOT in the derived
+45-syscall allowlist - no expansion), so the sandbox-internal timeout
+tests hang the workload on an ALLOWLISTED blocking read of a pipe it
+creates itself, or stall mid-output - the hang is legal under the filter.
+
+### Step 14 evidence
+
+- **HOST-SIDE VERIFIED** (Windows 337 OK / 155 substrate skips):
+  completes-within-deadline, deadline-expiry termination (SIGKILL),
+  partial-output-then-expiry (never false success), output-bound still
+  truncates before a long deadline, zero-bound, invalid-timeout and
+  invalid-bound fail-closed, select-failure and read-failure fail-closed,
+  deterministic notice.
+- **DOCKER VERIFIED** (uid 1001, real sandbox under the ACTUAL filter):
+  normal completion before the deadline succeeds (timed_out=False);
+  hanging workload -> deadline fires, session terminated, timed_out=True,
+  "NEVER REACHED" absent; output flows then stalls -> expiry terminates
+  (no false success); output bound + deadline coexist (truncation, not
+  timeout).
+- **NATIVE VERIFIED**: host-side logic and fail-closed behavior; full
+  rootless sandbox path NOT VERIFIED NATIVE (recorded AppArmor/setgroups
+  substrate reason).
+- **SEPARATION**: no syscall added - select/read/close are supervisor-
+  side (outside the filter); gate remains exactly 45.
+- **INVARIANTS PRESERVED**: NoNewPrivs=1, cap sets zero, filter
+  installed, rlimits enforced, cgroup controls preserved where delegated,
+  six-variable env intact, credential/socket boundary intact, bounded
+  output intact.
+
+### Step 14 labels
+
+- **DESIGN INTENT** (S-036): external supervisor deadline; workload
+  cannot disable/evade/reset it.
+- **DOCKER VERIFIED**: real expiry under the actual filter - session
+  terminated, timed_out reported, no false success.
+- **NATIVE VERIFIED**: host-side logic + fail-closed; sandbox-internal
+  path NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: EXECUTION stage guard still unregistered (item
+  20 - process-tree containment/cleanup - outstanding), so isolated
+  modes keep refusing at EXECUTION; rootless cgroup enforcement remains
+  the Step 10 open item.
