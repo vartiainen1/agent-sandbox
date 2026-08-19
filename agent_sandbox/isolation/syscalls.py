@@ -180,6 +180,8 @@ PR_GET_NO_NEW_PRIVS = 39   # returns 0 or 1 (the current no_new_privs value)
 PR_CAPBSET_DROP = 24       # arg2 = capability number to drop from the bounding set
 PR_CAP_AMBIENT = 47        # ambient-capability option (see PR_CAP_AMBIENT_CLEAR_ALL)
 PR_CAP_AMBIENT_CLEAR_ALL = 4  # PR_CAP_AMBIENT sub-option: clear all ambient caps
+PR_SET_CHILD_SUBREAPER = 36  # arg2=1 makes this process reap orphaned descendants
+PR_GET_CHILD_SUBREAPER = 37  # returns 0 or 1 (current child-subreaper state)
 
 
 def prctl(option: int, arg2: int = 0, arg3: int = 0, arg4: int = 0,
@@ -207,6 +209,18 @@ class CapUserData(ctypes.Structure):
     set; _LINUX_CAPABILITY_VERSION_3 uses an array of two for bits 0-63."""
     _fields_ = [("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32),
                 ("inheritable", ctypes.c_uint32)]
+
+
+def prctl_get_child_subreaper() -> int:
+    """prctl(PR_GET_CHILD_SUBREAPER): the kernel returns the value via
+    arg2 as a pointer to int (unlike PR_GET_NO_NEW_PRIVS which returns
+    the value directly). Passing NULL would EFAULT - a real buffer is
+    required. Returns 0 or 1. Raises OSError with the real errno on
+    failure (never hides errno, ADR-001)."""
+    value = ctypes.c_int(0)
+    _check(_raw(_number("prctl"), PR_GET_CHILD_SUBREAPER,
+                ctypes.byref(value)), "prctl")
+    return value.value
 
 
 def capset(version: int, data: list) -> None:

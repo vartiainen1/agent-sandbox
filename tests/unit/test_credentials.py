@@ -21,8 +21,9 @@ Categories (kept separate, per the charter):
   this substrate (native 24.04 runner: SKIPPED with recorded reason;
   Docker uid 1001: VERIFIED DOCKER).
 - Probe + integration: the ENVIRONMENT stage guard's real path now
-  covers the socket/credential env check; the wiring chain still refuses
-  at EXECUTION (the next unimplemented stage).
+  covers the socket/credential env check; the full mechanism chain
+  (Steps 2-15) completes to READY on a capable substrate (asserted by
+  the real-chain tests, not duplicated here).
 """
 
 from __future__ import annotations
@@ -234,9 +235,12 @@ class CredentialIntegrationTests(unittest.TestCase):
     """Full real chain through the fail-closed initializer."""
 
     @skip_unless_linux
-    def test_restricted_real_chain_still_refuses_at_execution(self):
-        # Step 12 completes the ENVIRONMENT stage - the refusal point is
-        # unchanged at EXECUTION (never a silent pass).
+    def test_restricted_real_chain_completes_to_ready(self):
+        # Steps 13-15 complete the EXECUTION stage (bounded output,
+        # timeout, process-tree containment + cleanup verification) -
+        # RESTRICTED now initializes to READY on a capable substrate
+        # (never a silent pass: every mechanism must be established and
+        # verified).
         from tests.unit import test_resources as tr
         tr._require_fs(self)
         src = tempfile.mkdtemp(prefix="as-cred-int-")
@@ -247,9 +251,9 @@ class CredentialIntegrationTests(unittest.TestCase):
         with unittest.mock.patch.object(init_mod, "_is_linux",
                                         return_value=True):
             result = SecurityInitializer(cfg).initialize()
-        self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.EXECUTION)
-        self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
+        self.assertTrue(result.ok, result.describe())
+        self.assertEqual(result.stage, InitStage.READY)
+        self.assertIsNone(result.failure)
 
 
 class CredentialSandboxTests(unittest.TestCase):
