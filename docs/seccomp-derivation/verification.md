@@ -240,3 +240,78 @@ precisely the kind of environment difference the gate exists to catch.
 Status preserved: rootless UID/GID mapping + filesystem boundary
 VERIFIED DOCKER; NOT VERIFIED NATIVE (recorded reason, never a false
 PASS); native fail-closed behavior VERIFIED.
+
+## Phase 1 Step 5 — network namespace deny-by-construction results (2026-08-19)
+
+Mechanism implemented: the netns created in Step 2 is configured into
+its final v0.1 state (ensure lo DOWN) and the resulting state is
+VERIFIED (only lo, lo DOWN, no addresses, no usable routes, distinct
+from host netns — `agent_sandbox/isolation/network.py`). Any unexpected
+interface/route/address is a REFUSAL (fail closed). HARDENED refusal
+point advances to PRIVILEGES.
+
+### Empirical findings (Step 5 probe, container uid 1001 — the charter's required investigation)
+
+1. **The workload CAN toggle lo** (ioctl SIOCSIFFLAGS succeeds): the
+   userns-owned netns grants ns-local CAP_NET_ADMIN, so the sandbox can
+   bring lo UP. Result: localhost-only connectivity (127.0.0.1/::1
+   appear; connect to a local listener reaches it) and ZERO external
+   path (connect to 8.8.8.8/169.254.169.254/host-gw still ENETUNREACH;
+   no route to any non-lo device). Full prevention of even the lo toggle
+   lands with Step 12 (capability drop removes CAP_NET_ADMIN) + Step 13
+   (seccomp) — documented residual, NOT claimed at Step 5.
+2. **Netlink dumps are NOT a reliable verification source inside the
+   userns-owned netns** on the validation kernel: RTM_GETLINK dump
+   returns zero messages, RTM_GETADDR dump returns EOPNOTSUPP, while
+   /proc/net/* is complete. Verification therefore uses /proc/self/net/*
+   (per-netns via the reader's netns) + ioctl — substrate-independent.
+3. **Netlink mutations (RTM_NEWROUTE/RTM_NEWLINK) return EOPNOTSUPP** in
+   the validation environment even as root with CAP_NET_ADMIN outside
+   the sandbox — a Docker-Desktop/WSL2 environment artifact, NOT the
+   security mechanism and NOT relied upon. On a native kernel they may
+   succeed; the island netns makes them harmless (no host-side peer
+   device exists; moving an interface to the host netns and
+   setns(CLONE_NEWNET) require initial-userns CAP_NET_ADMIN/CAP_SYS_ADMIN
+   and fail; no host pid is visible so no host netns fd path exists).
+4. The fresh netns is deny-by-construction BY DEFAULT: only lo (DOWN, no
+   addresses), no IPv4 routes; some kernels show inert IPv6 `::/0 dev
+   lo` entries which are unusable (lo DOWN, address-less). The
+   implementation verifies this state and REFUSES on any deviation.
+
+### Container-validated results (Docker Desktop, WSL2 kernel, uid 1001, seccomp=unconfined)
+
+- **27/27 Step 5 tests PASS** (real Linux execution): lo DOWN, only lo
+  in /proc/net/dev, no IPv4/IPv6 addresses, no IPv4 routes, IPv6 routes
+  reference only the DOWN lo, no default route usable, connect to
+  public/metadata/host-gw all ENETUNREACH, bind+listen unreachable,
+  host network state unchanged before/after, workload lo-up attempt
+  creates no external path (connect still fails), route-add/iface-create
+  attempts leave the boundary intact, no host-netns fd path exists
+  (only PID 1 visible, own netns), failure injections (lo cannot be
+  brought down, unexpected interface, unexpected route, unexpected
+  address, lo UP at verify time, unreadable state) all REFUSE.
+- Same substrate caveat as Steps 2-4 (Docker seccomp=unconfined to
+  exercise OUR code; the product filter is Step 13).
+
+### Native ubuntu CI (authoritative) — substrate limitation unchanged
+
+| Check | 3.11 | 3.12 |
+|---|---|---|
+| network real-path tests | SKIPPED (recorded reason: setgroups deny EACCES — rootless mapping cannot be established on the runner) | same |
+| host-side parsing + fail-closed + failure-injection tests | PASS | PASS |
+| Skeleton / namespace / rootfs / procdev regression | PASS | PASS |
+| Seccomp regression gate + behavioral probe | PASS | PASS |
+
+### Step 5 labels
+
+- **DESIGN INTENT** (ADR-006): dedicated netns, no interfaces, loopback
+  down, deny by construction; allowlists deferred to v0.2.
+- **DOCKER VERIFIED**: the complete deny-by-construction state and its
+  verification, plus the structural adversarial properties (no usable
+  path, no host escape, host netns unchanged).
+- **NATIVE VERIFIED**: fail-closed behavior and host-side logic only;
+  the full rootless path remains NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: the workload can toggle its own lo (ns-local
+  CAP_NET_ADMIN) until Steps 12-13 — localhost-only, no external path
+  (verified); netlink EOPNOTSUPP behavior is environment-specific and
+  not the security mechanism.

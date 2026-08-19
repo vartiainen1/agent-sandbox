@@ -142,19 +142,24 @@ class InitializationTests(unittest.TestCase):
     def setUp(self):
         # Real host behavior for the platform stage would make the refusal
         # point host-dependent; patch the helper (never sys.platform) so
-        # mechanism-stage refusals are deterministic across hosts. The two
-        # real mechanism probes (namespaces, filesystem) are also injected
-        # here as PASS so the wiring tests deterministically reach the next
-        # unimplemented stage; the REAL probes are exercised in
-        # tests/unit/test_namespaces.py and tests/unit/test_rootfs.py.
+        # mechanism-stage refusals are deterministic across hosts. The real
+        # mechanism probes (namespaces, filesystem, network) are also
+        # injected here as PASS so the wiring tests deterministically reach
+        # the next unimplemented stage; the REAL probes are exercised in
+        # tests/unit/test_namespaces.py, test_rootfs.py and test_network.py.
         self._patch = unittest.mock.patch.object(init_mod, "_is_linux", return_value=True)
         self._patch.start()
         self._patch_fs = unittest.mock.patch.object(
             setup_mod, "_filesystem_probe_impl",
             return_value=StageCheck(ok=True, reason="filesystem probe ok (test)"))
         self._patch_fs.start()
+        self._patch_net = unittest.mock.patch.object(
+            setup_mod, "_network_probe_impl",
+            return_value=StageCheck(ok=True, reason="network probe ok (test)"))
+        self._patch_net.start()
 
     def tearDown(self):
+        self._patch_net.stop()
         self._patch_fs.stop()
         self._patch.stop()
 
@@ -167,16 +172,16 @@ class InitializationTests(unittest.TestCase):
             return_value=StageCheck(ok=ok, reason=reason, code=code))
 
     def test_hardened_init_refuses_at_next_unimplemented_stage(self):
-        # Step 3: NAMESPACES and FILESYSTEM guards are registered and pass;
-        # HARDENED then refuses at NETWORK (the next mandatory stage, not
-        # yet implemented) - fail closed, never skip.
+        # Step 5: NAMESPACES, FILESYSTEM and NETWORK guards are registered
+        # and pass; HARDENED then refuses at PRIVILEGES (the next mandatory
+        # stage, not yet implemented) - fail closed, never skip.
         cfg = RuntimeConfig.from_dict(valid_config(mode="hardened"))
         with self._patch_probe(True, reason="probe ok (test)"):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertIs(result.mode, SecurityMode.HARDENED)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertEqual(result.failure.stage, InitStage.NETWORK)
+        self.assertEqual(result.failure.stage, InitStage.PRIVILEGES)
         self.assertIn("no implementation", result.failure.reason)
 
     def test_hardened_init_refuses_when_namespace_probe_fails(self):
@@ -210,7 +215,7 @@ class InitializationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertEqual(result.failure.stage, InitStage.NETWORK)
+        self.assertEqual(result.failure.stage, InitStage.PRIVILEGES)
 
     def test_platform_fail_closed_on_non_linux(self):
         cfg = RuntimeConfig.from_dict(valid_config(mode="compatibility"))
@@ -226,8 +231,8 @@ class InitializationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertIsInstance(result, InitResult)
         self.assertTrue(result.describe().startswith("initialization REFUSED"))
-        self.assertIn("network", result.describe())
-        self.assertEqual(result.failure.stage, InitStage.NETWORK)
+        self.assertIn("privileges", result.describe())
+        self.assertEqual(result.failure.stage, InitStage.PRIVILEGES)
         self.assertIsNotNone(result.failure.reason)
 
     def test_no_silent_downgrade(self):
@@ -240,7 +245,7 @@ class InitializationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertIs(result.mode, SecurityMode.HARDENED)
-        self.assertEqual(result.failure.stage, InitStage.NETWORK)
+        self.assertEqual(result.failure.stage, InitStage.PRIVILEGES)
 
     def test_stage_order_is_deterministic(self):
         seq = init_sequence(SecurityMode.HARDENED)
@@ -254,19 +259,21 @@ class InitializationTests(unittest.TestCase):
                          (InitStage.CONFIG_VALIDATED, InitStage.PLATFORM_LINUX,
                           InitStage.READY))
 
-    def test_only_steps2_3_stages_registered(self):
-        # Pins the honest Step 3 state: exactly NAMESPACES and FILESYSTEM
-        # are implemented (registered by isolation/setup). Stages 4+
-        # (NETWORK..EXECUTION) remain unregistered, so HARDENED refuses at
-        # the first missing one instead of pretending the boundary is
-        # complete.
+    def test_only_steps_2_to_5_stages_registered(self):
+        # Pins the honest Step 5 state: exactly NAMESPACES, FILESYSTEM and
+        # NETWORK are implemented (registered by isolation/setup). Stages
+        # 6+ (PRIVILEGES..EXECUTION) remain unregistered, so HARDENED
+        # refuses at the first missing one instead of pretending the
+        # boundary is complete.
         self.assertIn(InitStage.NAMESPACES, init_mod._STAGE_GUARDS)
         self.assertIn(InitStage.FILESYSTEM, init_mod._STAGE_GUARDS)
+        self.assertIn(InitStage.NETWORK, init_mod._STAGE_GUARDS)
         for stage in init_mod.MECHANISM_STAGES:
-            if stage in (InitStage.NAMESPACES, InitStage.FILESYSTEM):
+            if stage in (InitStage.NAMESPACES, InitStage.FILESYSTEM,
+                         InitStage.NETWORK):
                 continue
             self.assertNotIn(stage, init_mod._STAGE_GUARDS,
-                             f"{stage.value} must not be implemented in Step 3")
+                             f"{stage.value} must not be implemented in Step 5")
 
     def test_duplicate_stage_guard_registration_raises(self):
         # Registering a guard for an already-registered stage must raise
@@ -277,7 +284,11 @@ class InitializationTests(unittest.TestCase):
             init_mod.register_stage_guard(InitStage.CONFIG_VALIDATED,
                                           lambda c: None)
         self.assertIn(InitStage.CONFIG_VALIDATED, init_mod._STAGE_GUARDS)
-        self.assertNotIn(InitStage.NETWORK, init_mod._STAGE_GUARDS)
+        # Registry unpolluted by the failed duplicate: the mechanism guards
+        # are exactly the Step 5 set (NAMESPACES, FILESYSTEM, NETWORK) and
+        # PRIVILEGES is still unregistered.
+        self.assertIn(InitStage.NETWORK, init_mod._STAGE_GUARDS)
+        self.assertNotIn(InitStage.PRIVILEGES, init_mod._STAGE_GUARDS)
 
 
 class SessionGateTests(unittest.TestCase):

@@ -23,16 +23,23 @@ establishes the filesystem boundary before forking - private mount
 propagation, the rootfs tree bind-mounted into a mount point, a
 size-limited tmpfs at /tmp, pivot_root into the rootfs, detachment of the
 old root, and the minimal /dev tmpfs with its exact 6 device nodes
-(filesystem.py). PID 1 then mounts the sandbox proc view (/proc with
-hidepid=2 - only PID 1 can mount a procfs showing the sandbox's own
-processes) and runs the workload inside the new root; a failed or
-unverifiable boundary aborts BEFORE the workload fn runs (fail closed).
+(filesystem.py).
+
+Step 5 (network deny-by-construction): the netns created in Step 2 is
+configured into its final v0.1 state - lo brought DOWN (ensure_loopback_down)
+and the resulting state VERIFIED by PID 1 (only lo, lo DOWN, no
+addresses, no usable routes, distinct from host netns - network.py); any
+unexpected element is a refusal. PID 1 then mounts the sandbox proc view
+(/proc with hidepid=2 - only PID 1 can mount a procfs showing the
+sandbox's own processes) and runs the workload inside the new root; a
+failed or unverifiable boundary aborts BEFORE the workload fn runs (fail
+closed).
 
 The supervisor NEVER enters the namespaces or the new root: it must keep
-its host view (cleanup, audit, timeout - later steps). The NAMESPACES and
-FILESYSTEM stage guards therefore probe the real path in forked children
-and report a StageCheck back; a failed or unverifiable probe is a refusal,
-never a skip.
+its host view (cleanup, audit, timeout - later steps). The NAMESPACES,
+FILESYSTEM and NETWORK stage guards therefore probe the real path in
+forked children and report a StageCheck back; a failed or unverifiable
+probe is a refusal, never a skip.
 """
 
 from __future__ import annotations
@@ -43,7 +50,7 @@ import sys
 from dataclasses import dataclass
 
 from agent_sandbox.isolation import filesystem as fs_mod
-from agent_sandbox.isolation import namespaces, rootfs, syscalls, userns
+from agent_sandbox.isolation import namespaces, network as net_mod, rootfs, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import InitFailureCode, InitStage, StageCheck
 
@@ -123,13 +130,19 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
             os.dup2(out_w, 1)
             os.dup2(out_w, 2)
             os.close(out_w)
-            # PID 1 mounts + verifies the sandbox proc view (/proc with
-            # hidepid=2). A procfs mount shows the PID namespace of the
-            # process that mounts it, so only PID 1 can show the sandbox's
-            # own processes (filesystem.py docstring). Failure = refusal.
+            # PID 1 mounts + verifies the sandbox proc view FIRST (/proc
+            # with hidepid=2 - a procfs mount shows the PID namespace of
+            # the process that mounts it, so only PID 1 can show the
+            # sandbox's own processes; in the rootfs path /proc is not
+            # mounted in the new root until this point, and the network
+            # state verification reads /proc/self/net/*), then verifies
+            # the network deny-by-construction state. Any failure =
+            # refusal (never a silent continue on a partial boundary).
             try:
                 if fs_state is not None:
                     _mount_and_verify_proc()
+                net_mod.verify_deny_by_construction(
+                    state.host_ns.get("net", ""))
             except BaseException as e:  # noqa: BLE001
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
@@ -361,8 +374,74 @@ def _filesystem_guard(config) -> StageCheck:
     return filesystem_probe(config)
 
 
+def network_probe(config) -> StageCheck:
+    """Real-path probe of the NETWORK deny-by-construction state (netns
+    created in Step 2, configured + verified here), run in a forked child
+    so the supervisor never enters the boundary. This is the NETWORK
+    stage guard's evidence."""
+    return _network_probe_impl(config)
+
+
+def _network_probe_impl(config) -> StageCheck:
+    if not _security_init._is_linux() or not hasattr(os, "fork"):
+        return StageCheck(
+            ok=False, code=InitFailureCode.PLATFORM_UNSUPPORTED,
+            reason="network probe requires Linux with os.fork (fail closed "
+                   "- the netns boundary cannot be established here)")
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            state = enter_all_namespaces()
+            net_mod.ensure_loopback_down()
+        except BaseException as e:  # noqa: BLE001
+            os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
+            os._exit(1)
+        grand = os.fork()
+        if grand == 0:
+            # PID 1: verify the deny-by-construction state from inside the
+            # sandbox netns and report the verdict (the only verdict writer).
+            try:
+                net_mod.verify_deny_by_construction(
+                    state.host_ns.get("net", ""))
+                os.write(write_fd, b"OK")
+            except BaseException as e:  # noqa: BLE001
+                os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
+            os._exit(0)
+        _, status = os.waitpid(grand, 0)
+        os._exit(0 if os.waitstatus_to_exitcode(status) == 0 else 1)
+    os.close(write_fd)
+    data = b""
+    while True:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+    _, status = os.waitpid(pid, 0)
+    msg = data.decode(errors="replace").strip()
+    if msg == "OK":
+        return StageCheck(
+            ok=True,
+            reason="network namespace deny-by-construction state established "
+                   "and verified (only loopback, lo DOWN, no addresses, no "
+                   "usable routes, distinct from host netns)")
+    return StageCheck(
+        ok=False, code=InitFailureCode.STAGE_FAILED,
+        reason=msg or f"network probe child failed (status {status}) - "
+                      "fail closed, workload not executed")
+
+
+def _network_guard(config) -> StageCheck:
+    """NETWORK stage guard (registered below). Probes the real netns
+    deny-by-construction state; HARDENED/RESTRICTED refuse unless it is
+    established and verified."""
+    return network_probe(config)
+
+
 # Register the guards with the enforcement core. This module is imported
 # lazily by SecurityInitializer (and directly by tests), so the registry
 # sees each mechanism exactly when it exists - never before.
 _security_init.register_stage_guard(InitStage.NAMESPACES, _namespaces_guard)
 _security_init.register_stage_guard(InitStage.FILESYSTEM, _filesystem_guard)
+_security_init.register_stage_guard(InitStage.NETWORK, _network_guard)
