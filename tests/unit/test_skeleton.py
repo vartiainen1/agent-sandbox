@@ -39,18 +39,15 @@ from agent_sandbox.security.init import SecurityInitializer, init_sequence
 
 
 def _fake_resources_probe(config):
-    """Mode-aware RESOURCES probe stand-in (Step 9): HARDENED refuses AT
-    RESOURCES (the cgroup v2 half of the stage is Step 10, ADR-007);
-    RESTRICTED completes its RESOURCES stage with rlimits only and
-    advances. Mirrors the real ``_resources_probe_impl`` semantics."""
-    if config.mode is SecurityMode.HARDENED:
-        return StageCheck(
-            ok=False, code=InitFailureCode.STAGE_FAILED,
-            reason="cgroup v2 (the HARDENED-mandatory half of the RESOURCES "
-                   "stage, ADR-007) is not yet implemented (Step 15 of the "
-                   "mandated order) - RESOURCES incomplete, fail closed, "
-                   "workload not executed")
-    return StageCheck(ok=True, reason="rlimits established (test)")
+    """RESOURCES probe stand-in (Steps 9-10): rlimits + cgroup v2 session
+    established and verified (a delegation-capable host, READING A
+    ADR-007). HARDENED and RESTRICTED therefore complete RESOURCES and
+    the wiring chain advances to ENVIRONMENT (the next unimplemented
+    stage). Mirrors the real ``_resources_probe_impl`` success semantics;
+    the delegation-blocked refusal paths are exercised for real in
+    tests/unit/test_cgroups.py and test_resources.py."""
+    return StageCheck(
+        ok=True, reason="rlimits + cgroup v2 session established (test)")
 
 
 def valid_config(**overrides) -> dict:
@@ -206,20 +203,18 @@ class InitializationTests(unittest.TestCase):
             return_value=StageCheck(ok=ok, reason=reason, code=code))
 
     def test_hardened_init_refuses_at_next_unimplemented_stage(self):
-        # Steps 2-9: NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES, SECCOMP
-        # and RESOURCES (rlimits) guards are registered and pass; HARDENED
-        # then refuses AT RESOURCES because the cgroup v2 half of the
-        # stage is Step 10 (ADR-007) - the refusal point stays at
-        # RESOURCES, fail closed, never skip.
+        # Steps 2-10: NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES, SECCOMP
+        # and RESOURCES (rlimits + cgroup v2, delegation-capable host)
+        # guards are registered and pass; HARDENED then refuses at the
+        # next unimplemented stage (ENVIRONMENT) - fail closed, never skip.
         cfg = RuntimeConfig.from_dict(valid_config(mode="hardened"))
         with self._patch_probe(True, reason="probe ok (test)"):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertIs(result.mode, SecurityMode.HARDENED)
-        self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
-        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
-        self.assertIn("cgroup v2", result.failure.reason)
-        self.assertIn("RESOURCES incomplete", result.failure.reason)
+        self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
+        self.assertEqual(result.failure.stage, InitStage.ENVIRONMENT)
+        self.assertIn("no implementation", result.failure.reason)
 
     def test_hardened_init_refuses_when_namespace_probe_fails(self):
         cfg = RuntimeConfig.from_dict(valid_config(mode="hardened"))
@@ -272,8 +267,8 @@ class InitializationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertIsInstance(result, InitResult)
         self.assertTrue(result.describe().startswith("initialization REFUSED"))
-        self.assertIn("resources", result.describe())
-        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
+        self.assertIn("environment", result.describe())
+        self.assertEqual(result.failure.stage, InitStage.ENVIRONMENT)
         self.assertIsNotNone(result.failure.reason)
 
     def test_no_silent_downgrade(self):
@@ -286,7 +281,7 @@ class InitializationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertIs(result.mode, SecurityMode.HARDENED)
-        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
+        self.assertEqual(result.failure.stage, InitStage.ENVIRONMENT)
 
     def test_stage_order_is_deterministic(self):
         seq = init_sequence(SecurityMode.HARDENED)
@@ -300,10 +295,10 @@ class InitializationTests(unittest.TestCase):
                          (InitStage.CONFIG_VALIDATED, InitStage.PLATFORM_LINUX,
                           InitStage.READY))
 
-    def test_only_steps_2_to_8_stages_registered(self):
-        # Pins the honest Step 9 state: exactly NAMESPACES, FILESYSTEM,
-        # NETWORK, PRIVILEGES, SECCOMP and RESOURCES (rlimits only) are
-        # implemented (registered by isolation/setup). Stages 9+
+    def test_only_steps_2_to_10_stages_registered(self):
+        # Pins the honest Step 10 state: exactly NAMESPACES, FILESYSTEM,
+        # NETWORK, PRIVILEGES, SECCOMP and RESOURCES (rlimits + cgroup v2)
+        # are implemented (registered by isolation/setup). Stages 9+
         # (ENVIRONMENT..EXECUTION) remain unregistered, so HARDENED
         # refuses at the first missing one instead of pretending the
         # boundary is complete.
@@ -319,7 +314,7 @@ class InitializationTests(unittest.TestCase):
                          InitStage.SECCOMP, InitStage.RESOURCES):
                 continue
             self.assertNotIn(stage, init_mod._STAGE_GUARDS,
-                             f"{stage.value} must not be implemented in Step 9")
+                             f"{stage.value} must not be implemented in Step 10")
 
     def test_duplicate_stage_guard_registration_raises(self):
         # Registering a guard for an already-registered stage must raise

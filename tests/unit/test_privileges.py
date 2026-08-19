@@ -623,9 +623,10 @@ class IntegrationTests(unittest.TestCase):
     @skip_unless_linux
     def test_hardened_refuses_at_resources_after_real_chain(self):
         # Full real path: the NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES,
-        # SECCOMP and RESOURCES (rlimits) probes all pass; HARDENED then
-        # refuses AT RESOURCES (the cgroup v2 half of the stage is Step
-        # 10, ADR-007) - fail closed, no execution.
+        # SECCOMP and RESOURCES (rlimits) probes run; HARDENED then
+        # refuses AT RESOURCES because cgroup v2 delegation is unavailable
+        # on this substrate (Docker rootless: cgroupfs read-only) - fail
+        # closed, no execution.
         _require_fs(self)
         src = tempfile.mkdtemp(prefix="as-nnp-int-")
         self.addCleanup(shutil.rmtree, src, True)
@@ -636,7 +637,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
-        self.assertIn("cgroup v2", result.failure.reason)
+        self.assertIn("cgroup", result.failure.reason)
+        self.assertIn("fail closed", result.failure.reason)
 
     def test_privileges_guard_registered(self):
         # The PRIVILEGES stage guard is the real probe - registered by

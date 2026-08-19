@@ -696,9 +696,9 @@ class IntegrationTests(unittest.TestCase):
     def test_network_probe_ok_and_hardened_refuses_at_resources(self):
         # Full real path: namespaces + filesystem + network + no_new_privs
         # + capability reduction + seccomp + rlimits boundary verified,
-        # then HARDENED refuses AT RESOURCES (the cgroup v2 half of the
-        # stage is Step 10, ADR-007) - the refusal point stays at
-        # RESOURCES while the stage is incomplete.
+        # then HARDENED refuses AT RESOURCES because cgroup v2 delegation
+        # is unavailable on this substrate (Docker rootless: cgroupfs
+        # read-only) - the refusal point stays at RESOURCES, fail closed.
         ok, reason = _fs_available()
         if not ok:
             self.skipTest("filesystem boundary substrate unavailable: " + reason)
@@ -713,7 +713,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
-        self.assertIn("cgroup v2", result.failure.reason)
+        self.assertIn("cgroup", result.failure.reason)
+        self.assertIn("fail closed", result.failure.reason)
 
     @skip_unless_linux
     def test_probe_reason_covers_network(self):

@@ -41,6 +41,19 @@ _RESOURCE_KEYS = (
     "wall_time_seconds",
 )
 
+# cgroup policy keys (Phase 1 Step 10, ADR-007): optional in the resources
+# dict with the documented defaults below (the approved policy definition -
+# READING A: all four cgroup controllers are mandatory for HARDENED).
+# cpu_quota_percent: percent of one CPU core (1..10000); the cpu.max quota
+#   is cpu_quota_percent * 1000 us over a fixed 100000 us period.
+# io_mbps: MiB/s rate limit for io.max (1..1048576) applied to the
+#   workspace backing block device (resolved from kernel state).
+_CGROUP_POLICY_KEYS = ("cpu_quota_percent", "io_mbps")
+DEFAULT_CPU_QUOTA_PERCENT = 100
+DEFAULT_IO_MBPS = 1024
+_CPU_QUOTA_PERCENT_MIN, _CPU_QUOTA_PERCENT_MAX = 1, 10000
+_IO_MBPS_MIN, _IO_MBPS_MAX = 1, 1048576
+
 
 @dataclass(frozen=True)
 class ResourceLimits:
@@ -48,6 +61,16 @@ class ResourceLimits:
 
     Every limit is enforced outside the workload and cannot be raised by
     it. All values must be positive (counts below 1 are usage errors).
+
+    cgroup policy (Phase 1 Step 10, ADR-007 - READING A, approved
+    2026-08-19): ``cpu_quota_percent`` (percent of one core, default 100)
+    maps to cpu.max = "{percent * 1000} 100000" (fixed 100000 us period);
+    ``io_mbps`` (MiB/s, default 1024) maps to
+    io.max = "{major}:{minor} rbps={mbps * MiB} wbps={mbps * MiB}" on the
+    workspace backing block device (resolved from kernel state; an
+    unresolvable device is a HARDENED refusal, never a skip). Both are
+    optional in the resources dict and default to these documented
+    values.
     """
 
     cpu_seconds: int
@@ -57,6 +80,8 @@ class ResourceLimits:
     open_files: int
     output_mb: int
     wall_time_seconds: int
+    cpu_quota_percent: int = DEFAULT_CPU_QUOTA_PERCENT  # % of one core (cpu.max)
+    io_mbps: int = DEFAULT_IO_MBPS                      # MiB/s (io.max on the backing device)
 
 
 @dataclass(frozen=True)
@@ -156,7 +181,7 @@ def _parse_resources(value) -> ResourceLimits:
         return _default_limits()
     if not isinstance(value, dict):
         raise ConfigError("resources: expected a mapping of limits")
-    unknown = sorted(set(value) - set(_RESOURCE_KEYS))
+    unknown = sorted(set(value) - (set(_RESOURCE_KEYS) | set(_CGROUP_POLICY_KEYS)))
     if unknown:
         raise ConfigError(f"resources: unknown limit(s): {', '.join(unknown)}")
     kwargs = {}
@@ -169,7 +194,26 @@ def _parse_resources(value) -> ResourceLimits:
         if v < 1:
             raise ConfigError(f"resources: {key} must be >= 1, got {v}")
         kwargs[key] = v
+    # cgroup policy keys: optional, defaulted to the documented values.
+    kwargs["cpu_quota_percent"] = _parse_bounded(
+        "cpu_quota_percent", value.get("cpu_quota_percent"),
+        DEFAULT_CPU_QUOTA_PERCENT, _CPU_QUOTA_PERCENT_MIN, _CPU_QUOTA_PERCENT_MAX)
+    kwargs["io_mbps"] = _parse_bounded(
+        "io_mbps", value.get("io_mbps"), DEFAULT_IO_MBPS,
+        _IO_MBPS_MIN, _IO_MBPS_MAX)
     return ResourceLimits(**kwargs)
+
+
+def _parse_bounded(key: str, value, default: int, lo: int, hi: int) -> int:
+    """Parse an optional bounded integer with a documented default."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"resources: {key} must be an integer, got {value!r}")
+    if not lo <= value <= hi:
+        raise ConfigError(
+            f"resources: {key} must be in [{lo}, {hi}], got {value}")
+    return value
 
 
 def _default_limits() -> ResourceLimits:

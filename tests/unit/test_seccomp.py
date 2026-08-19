@@ -543,11 +543,14 @@ class SeccompProbeTests(unittest.TestCase):
 class IntegrationTests(unittest.TestCase):
     @skip_unless_linux
     def test_hardened_refuses_at_resources_after_real_chain(self):
-        # Full real path: all six mechanism probes pass (namespaces,
-        # filesystem, network, privileges, seccomp, rlimits); HARDENED then
-        # refuses AT RESOURCES (the cgroup v2 half of the stage is Step
-        # 10, ADR-007) - the refusal point stays at RESOURCES while the
-        # stage is incomplete.
+        # Full real path: all mechanism probes through RESOURCES run
+        # (namespaces, filesystem, network, privileges, seccomp, rlimits);
+        # HARDENED then refuses AT RESOURCES because cgroup v2 delegation
+        # is unavailable on this substrate (Docker rootless: cgroupfs
+        # read-only) - the refusal point stays at RESOURCES, fail closed.
+        # On a delegation-capable host this probe would pass and the
+        # refusal would advance to ENVIRONMENT (asserted by the
+        # privileged-substrate tests in test_cgroups.py).
         _require_fs(self)
         src = make_source()
         self.addCleanup(shutil.rmtree, src, True)
@@ -558,7 +561,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
-        self.assertIn("cgroup v2", result.failure.reason)
+        self.assertIn("cgroup", result.failure.reason)
+        self.assertIn("fail closed", result.failure.reason)
 
 
 if __name__ == "__main__":
