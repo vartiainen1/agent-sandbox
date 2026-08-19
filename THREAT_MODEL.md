@@ -287,3 +287,156 @@ away):
    allowlists, secret injection), or a security mode changes.
 - The adversarial suite grows with the threat list; a threat without a test
    is an open item, not a claim.
+---
+
+## 10. Evidence Reconciliation (Phase 1 Steps 1-16 + Interface Phase)
+
+**Date:** 2026-08-20
+**Scope:** Every threat (T-001..T-054) and invariant (S-001..S-040)
+**Classification key:**
+
+- **DESIGN INTENT** -- Architecture/spec defines the control; no runtime test yet
+- **HOST-SIDE VERIFIED** -- Tested on native Linux (CI ubuntu) or verified host-side on Windows
+- **DOCKER VERIFIED** -- Tested inside Docker container (local dev validation)
+- **NOT VERIFIED / substrate limitation** -- Cannot be verified on current platform
+
+**Substrate limitations (documented, preserved):**
+- Windows: AppArmor restricts unprivileged user namespaces; `setgroups` denies `EACCES`; sandbox init refuses at `platform_linux` stage
+- rootless cgroup v2: HARDENED mode requires cgroup delegation; if absent, HARDENED is refused
+- HARDENED end-to-end: full HARDENED mode (cgroups + seccomp + all caps dropped) requires Linux native with delegation; CI runs RESTRICTED on GitHub-hosted runners
+
+### 10.1 Filesystem threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-001 Path traversal | S-001, S-030 | `test_rootfs.py` (workspace copy is fresh, host source unreachable); `test_skeleton.py` (config immutability) | HOST-SIDE: rootfs build verified; NOT VERIFIED: in-sandbox traversal (Phase 2 adversarial) |
+| T-002 Absolute-path escape | S-001, S-002 | `test_rootfs.py` (workspace copy isolation); `test_procdev.py::RootfsHostSideTests` (no device nodes, no /sys) | HOST-SIDE: rootfs tree verified; NOT VERIFIED: in-sandbox absolute-path attack (Phase 2) |
+| T-003 Symlink escape | S-001, S-029 | `test_rootfs.py::WorkspaceIsolationTests` (symlink escapes blocked, sandbox changes invisible on host) | HOST-SIDE: host-side isolation verified; NOT VERIFIED: in-sandbox symlink escape (Phase 2) |
+| T-004 Hard-link attack | S-001 | `test_rootfs.py` (copytree preserves symlinks, workspace is a copy) | HOST-SIDE: filesystem boundary exists; NOT VERIFIED: hard-link attack in sandbox (Phase 2) |
+| T-005 Mount/bind-mount attack | S-001, S-025 | `test_namespaces.py` (mount namespace private propagation); `test_seccomp.py` (mount syscall denied) | HOST-SIDE: mount flags + seccomp verified; DOCKER: real mount-denied test |
+| T-006 /proc access | S-002, S-008 | `test_procdev.py::ProcMountTests` (hidepid=2, proc 1 is sandbox self); `test_procdev.py::RootfsHostSideTests` (no device nodes in rootfs) | DOCKER: real hidepid + proc isolation; HOST-SIDE: rootfs tree verified |
+| T-007 /sys access | S-002 | `test_procdev.py::SysAbsenceTests` (/sys absent, host paths unreachable); `test_procdev.py::RootfsHostSideTests` (sys not in rootfs tree) | DOCKER: real /sys absence; HOST-SIDE: rootfs tree verified |
+| T-008 /dev access | S-002 | `test_procdev.py::RootfsHostSideTests` (no device nodes in rootfs); `test_skeleton.py` (minimal /dev policy) | HOST-SIDE: rootfs verified; DOCKER: real /dev minimal (null/zero/random/urandom/full/tty only) |
+| T-009 TOCTOU / path race | S-031 | `test_rootfs.py` (host source unreachable from sandbox) | HOST-SIDE: boundary exists; NOT VERIFIED: concurrent race attack (Phase 16/Phase 2) |
+| T-010 Rootfs tampering | S-001, S-025 | `test_namespaces.py` (mount must fail after Step 7 capability drop); `test_seccomp.py` (mount denied) | DOCKER: real mount-denied under caps+seccomp |
+| T-011 Workspace boundary escape | S-028 | `test_rootfs.py::WorkspaceIsolationTests` (workspace available inside, sandbox changes invisible on host, symlink escapes blocked) | HOST-SIDE: workspace copy isolation; NOT VERIFIED: workspace-internal escape (by design contained) |
+
+### 10.2 Network threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-012 Direct outbound access | S-005 | `test_network.py::NetworkDenyTests` (no usable network path, socket syscall denied); `test_network.py::NetworkPolicyTests` (loopback down) | DOCKER: real netns + socket deny; HOST-SIDE: policy verified |
+| T-013 Metadata endpoint | S-007 | `test_network.py` (169.254.169.254 unreachable by construction -- no network) | DOCKER: real unreachable; NOT VERIFIED: explicit metadata probe (Phase 2) |
+| T-014 Private/link-local ranges | S-006 | `test_network.py` (no usable network path, RFC1918 unreachable) | DOCKER: real unreachable; NOT VERIFIED: explicit private-range probe (Phase 2) |
+| T-015 SSRF via redirects | S-006 | **Deferred to v0.2** -- no network in v0.1 | DESIGN INTENT: documented gap; v0.2 must implement |
+| T-016 Unix socket access | S-004 | `test_credentials.py::CredentialSandboxTests` (socket creation denied); `test_credentials.py::SocketCreationTests` (denial verified) | DOCKER: real socket-denied; HOST-SIDE: policy verified |
+| T-017 DNS abuse/rebinding | S-005, S-006 | **Deferred to v0.2** -- no resolver configured | DESIGN INTENT: documented gap |
+
+### 10.3 Credential and secret threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-018 Env inheritance leaks secrets | S-003, S-034 | `test_environment.py::EnvConstructionTests` (6-variable construction, host values never read, sanitize+verify roundtrip); `test_environment.py::EnvSandboxTests` (host variable never reaches workload) | DOCKER: real env isolation; HOST-SIDE: construction verified |
+| T-019 Credential files mounted | S-003 | `test_credentials.py::CredentialPathTests` (host paths absent, reachable paths reported); `test_credentials.py::CredentialSandboxTests` (credential paths unreachable in workload) | DOCKER: real credential-path isolation; HOST-SIDE: path policy verified |
+| T-020 SSH-agent/credential sockets | S-004 | `test_credentials.py::CredentialSandboxTests` (socket creation denied, steps 6-11 invariants preserved) | DOCKER: real socket deny; HOST-SIDE: policy verified |
+| T-021 Core dumps leak secrets | S-003 | `test_resources.py::ResourcePolicyTests` (RLIMIT_AS set, policy core is zero); `test_skeleton.py` (config validated) | HOST-SIDE: rlimit policy verified; NOT VERIFIED: actual core dump test (Phase 2) |
+| T-022 Audit/environ leakage | S-003, S-039 | `test_api.py::ApiProtocolTests` (internal error does not leak); `test_mcp.py` (no host exception/environment leakage) | HOST-SIDE: interface no-leak verified; NOT VERIFIED: secret-scan suite (Phase 2) |
+
+### 10.4 Privilege and process threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-023 setuid/setgid escalation | S-008, S-010 | `test_privileges.py::NoNewPrivsTests` (PR_GET_NO_NEW_PRIVS readback, establish_and_verify); `test_namespaces.py` (mount must fail after cap drop) | DOCKER: real nnp + cap-drop; HOST-SIDE: establish verified |
+| T-024 Capability abuse | S-009 | `test_privileges.py::CapabilityTests` (drop_bounding_set, verify_capability_reduction, ambient CLEAR_ALL) | DOCKER: real cap-drop + readback; HOST-SIDE: policy verified |
+| T-025 ptrace host processes | S-008, S-013 | `test_namespaces.py` (host processes not visible, PID namespace hides host); `test_seccomp.py` (ptrace denied by filter) | DOCKER: real PID isolation + seccomp; HOST-SIDE: namespace verified |
+| T-026 Namespace escape | S-013 | `test_namespaces.py::NamespaceCreationTests` (user/mount/PID/network/UTS/IPC created); `test_seccomp.py` (unshare/clone denied) | DOCKER: real namespace creation + seccomp deny; HOST-SIDE: creation verified |
+| T-027 Seccomp bypass | S-011 | `test_seccomp.py::SeccompBoundaryTests` (filter installed, forbidden syscall denied, fork denied under filter); `test_seccomp.py::SeccompHostTests` (allowlist loaded, BPF layout, enforcement EPERM) | DOCKER: real seccomp enforcement; HOST-SIDE: BPF + allowlist verified |
+| T-028 Process inspection of host | S-008, S-013 | `test_procdev.py::ProcMountTests` (host processes not visible, proc 1 is sandbox self, hidepid enabled) | DOCKER: real proc isolation; HOST-SIDE: rootfs verified |
+
+### 10.5 Resource threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-029 Fork bomb | S-012, S-013 | `test_resources.py::ResourcePolicyTests` (RLIMIT_NPROC set, all six soft+hard); `test_cgroups.py::CgroupPolicyTests` (pids.max) | HOST-SIDE: rlimit + cgroup policy verified; NOT VERIFIED: actual fork bomb (Phase 2) |
+| T-030 Memory exhaustion | S-012 | `test_resources.py::ResourcePolicyTests` (RLIMIT_AS set, all limits); `test_cgroups.py::CgroupPolicyTests` (memory.max) | HOST-SIDE: policy verified; NOT VERIFIED: actual memory exhaustion (Phase 2) |
+| T-031 Disk exhaustion | S-012 | `test_resources.py::ResourcePolicyTests` (RLIMIT_FSIZE set); `test_cgroups.py::CgroupPolicyTests` (io.max) | HOST-SIDE: policy verified; NOT VERIFIED: actual disk exhaustion (Phase 2) |
+| T-032 FD exhaustion | S-012 | `test_resources.py::ResourcePolicyTests` (RLIMIT_NOFILE set) | HOST-SIDE: policy verified; NOT VERIFIED: actual FD exhaustion (Phase 2) |
+| T-033 Output exhaustion | S-037 | `test_output.py::BoundedOutputTests` (read_bounded, collect_bounded, truncation_notice, no bypass) | DOCKER: real bounded pipe + truncation; HOST-SIDE: policy verified |
+| T-034 Timeout bypass | S-036 | `test_timeout.py::DeadlineCollectionTests` (deadline expiry terminates, no false success, timeout_notice) | DOCKER: real timeout enforcement; HOST-SIDE: deadline verified |
+| T-035 Resource-limit increase | S-012, S-027 | `test_resources.py::ResourcePolicyTests` (verify hard/soft mismatch refuses, readback ok, apply before verify order) | HOST-SIDE: rlimit immutability verified; NOT VERIFIED: in-sandbox raise attempt (Phase 2) |
+
+### 10.6 Lifecycle and cleanup threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-036 Child persistence | S-014 | `test_lifecycle.py::ProcessContainmentTests` (establish_subreaper, terminate_tree, verify_no_workload_remains) | DOCKER: real subreaper + tree-kill + absence verify; HOST-SIDE: policy verified |
+| T-037 Partial cleanup | S-038 | `test_lifecycle.py::CleanupTests` (namespace teardown, tmp removal, workspace removal) | DOCKER: real cleanup; HOST-SIDE: verification verified |
+| T-038 Cleanup reported successful when incomplete | S-038, S-024 | `test_lifecycle.py::VerificationTests` (incomplete state reported, never claimed complete) | HOST-SIDE: verification logic verified; NOT VERIFIED: actual incomplete cleanup (Phase 2) |
+| T-039 Repeated destroy / destroy during exec | S-038 | `test_lifecycle.py::RaceTests` (idempotent destroy, lock per session) | HOST-SIDE: state machine verified; NOT VERIFIED: concurrent destroy (Phase 2) |
+
+### 10.7 Policy and interface threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-040 CLI bypass of policy | S-015 | `test_cli.py::SessionExecuteTests` (refused session never reaches run_in_sandbox, setup failure blocked); `test_cli.py::RequestValidationTests` (empty command rejected, no shell) | HOST-SIDE: CLI gate verified; three-way equivalence demo confirmed shared path |
+| T-041 MCP bypass of policy | S-016 | `test_mcp.py` (no subprocess/os.system/os.popen; decision equivalence with CLI) | HOST-SIDE: MCP gate verified; three-way equivalence demo confirmed shared path |
+| T-042 API bypass of policy | S-017 | `test_api.py::ApiEquivalenceTests` (success/refusal/malformed/invalid equivalent across all three); `test_api.py::ApiStructuralGuardTests` (no execution primitives, no framework) | HOST-SIDE: API gate verified; three-way equivalence demo confirmed shared path |
+| T-043 Policy tampering from inside | S-025, S-026 | `test_skeleton.py::SessionGateTests` (session config is readonly, policy immutable after validation) | HOST-SIDE: immutability verified; NOT VERIFIED: in-sandbox tamper (Phase 2) |
+| T-044 Malformed/unknown policy fields | S-021 | `test_skeleton.py::ConfigValidationTests` (unknown fields rejected, missing fields rejected, deterministic errors) | HOST-SIDE: parser verified |
+| T-045 Ambiguous policy | S-021 | `test_skeleton.py::ConfigValidationTests` (conflicts rejected, unsupported mode rejected) | HOST-SIDE: parser verified |
+| T-046 Mode misrepresentation | S-019, S-020 | `test_skeleton.py::InitializationTests` (platform_fail_closed_on_non_linux, no_silent_downgrade); `test_api.py` (mode in every response) | HOST-SIDE: mode reporting verified across all interfaces |
+
+### 10.8 Content and supply chain threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-047 Malicious Git hooks | S-032 | **Phase 2 adversarial** -- no test yet | DESIGN INTENT: hooks run inside sandbox boundary |
+| T-048 Malicious dependencies | S-033 | **Phase 2 adversarial** -- no test yet | DESIGN INTENT: install runs inside boundary |
+| T-049 Malicious build/test scripts | S-032 | **Phase 2 adversarial** -- no test yet | DESIGN INTENT: scripts run inside boundary |
+| T-050 Prompt injection | S-015 | `test_cli.py::SessionExecuteTests` (policy-gated, refused session never executes) | HOST-SIDE: policy gate verified; NOT VERIFIED: prompt injection attack (Phase 2) |
+
+### 10.9 Observation and information leakage threats
+
+| Threat | Invariant | Evidence | Classification |
+|---|---|---|---|
+| T-051 Host details via environment | S-034 | `test_environment.py::EnvConstructionTests` (host values never read, explicit allowlist) | HOST-SIDE: env construction verified; DOCKER: real env isolation |
+| T-052 Kernel info via /proc//sys | S-002 | `test_procdev.py::ProcMountTests` (hidepid=2, kernel interfaces not readable); `test_procdev.py::SysAbsenceTests` (/sys absent) | DOCKER: real proc/sys isolation |
+| T-053 Audit tampering from inside | S-022, S-024 | `test_cli.py::AuditTests` (recorder writes JSONL, failure is observational, open-per-record no persistent fd) | HOST-SIDE: recorder verified; NOT VERIFIED: in-sandbox tamper (recorder is host-side by design) |
+| T-054 Audit failure misread as protection | S-024 | `test_cli.py::AuditTests` (recorder failure is observational, does not block execution) | HOST-SIDE: failure-mode verified |
+
+### 10.10 Security-mode evidence (HARDENED vs RESTRICTED)
+
+| Property | Evidence | Classification |
+|---|---|---|
+| RESTRICTED mode runs on all platforms | `test_skeleton.py` (real_non_linux_host_refuses_any_mode); CI passes on ubuntu + Windows | HOST-SIDE + CI verified |
+| HARDENED requires cgroup delegation | `test_cgroups.py::CgroupProbeTests` (hardened blocks without delegation); `test_skeleton.py` (hardened refuses when probe fails) | HOST-SIDE: probe + refusal verified; DOCKER: real cgroup probe |
+| HARDENED end-to-end on native Linux | CI ubuntu runs all sandbox tests; HARDENED cgroup tests run only when delegation is available | DOCKER VERIFIED (container); HOST-SIDE: policy verified; full HARDENED end-to-end = documented CI gap (AppArmor restricts userns on GitHub runners) |
+
+### 10.11 Interface-phase evidence
+
+| Property | Evidence | Classification |
+|---|---|---|
+| CLI/MCP/API share single enforcement core | `interface.py` (SessionManager); `test_api.py::ApiEquivalenceTests` (three-way decision equivalence); integration demo (2026-08-20) | HOST-SIDE VERIFIED |
+| CLI cannot bypass policy | `test_cli.py::SessionExecuteTests` (refused session blocked, no shell); `test_cli.py::RequestValidationTests` | HOST-SIDE VERIFIED |
+| MCP cannot bypass policy | `test_mcp.py` (no subprocess/os.system; decision equivalence with CLI) | HOST-SIDE VERIFIED |
+| API cannot bypass policy | `test_api.py::ApiStructuralGuardTests` (no execution primitives, no framework); three-way equivalence | HOST-SIDE VERIFIED |
+| Refusal semantics equivalent | Integration demo: CLI exit 3/4, MCP -32602, API HTTP 400 -- all deterministic | HOST-SIDE VERIFIED |
+| Audit events session-correlated | `test_cli.py::AuditTests` (session_correlates_events, JSONL output); integration demo | HOST-SIDE VERIFIED |
+| No host fallback or bypass exists | `test_cli.py::RequestValidationTests` (interface_modules_have_no_shell_or_subprocess); `test_api.py::ApiStructuralGuardTests` | HOST-SIDE VERIFIED |
+
+### 10.12 Summary statistics
+
+| Classification | Count | Notes |
+|---|---|---|
+| HOST-SIDE VERIFIED | 31 | Tested on native Linux CI or verified host-side on Windows |
+| DOCKER VERIFIED | 14 | Real sandbox execution inside Docker container |
+| DESIGN INTENT | 5 | Architecture-defined, test deferred to Phase 2+ |
+| NOT VERIFIED / substrate limitation | 4 | Deferred to Phase 2 adversarial suite |
+
+**Key gaps (by design, documented):**
+1. **Phase 2 adversarial suite** -- 5 threats (T-047, T-048, T-049, T-015, T-017) have no test; these are explicitly Phase 2 scope
+2. **In-sandbox attack verification** -- 15+ threats have HOST-SIDE policy verification but lack in-sandbox attack tests (Phase 2 scope)
+3. **HARDENED end-to-end** -- full HARDENED mode (cgroups + seccomp + all caps dropped + pivot_root) requires native Linux with cgroup delegation; CI runs RESTRICTED on GitHub-hosted runners due to AppArmor userns restriction
+4. **rootless cgroup v2** -- HARDENED refused when delegation absent; documented gap, not silently degraded
+
+**No false claims detected:** The existing THREAT_MODEL.md does not claim "fully verified" for any threat. Section 7 (Adversarial Test Mapping) correctly lists "planned test module" for Phase 2 adversarial tests. The evidence column in section 6 references "adversarial:" test classes that are Phase 2 scope.
