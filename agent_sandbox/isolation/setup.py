@@ -87,6 +87,20 @@ after the cgroup join and BEFORE the workload fn (environment.py). The
 ENVIRONMENT stage registers; HARDENED/RESTRICTED advance past it to the
 next unimplemented stage (EXECUTION) and refuse there.
 
+Step 12 (credential/socket isolation, S-003/S-004, ADR-009): from the
+WORKLOAD view (rootfs path only) no host credential/control-socket path
+is reachable, no socket/credential env variable survived sanitization,
+and Unix-socket creation is DENIED by the installed filter. Any exposure
+refuses before the workload fn (credentials.py). Completes the
+ENVIRONMENT stage (Steps 16-17).
+
+Step 13 (bounded output, S-037, item 18): the supervisor reads
+stdout/stderr through a bounded pipe; past the limit it terminates the
+session with a truncation notice (output.py). This is the first EXECUTION
+stage mechanism - the stage guard still does NOT register until items
+19-20 (timeout, process-tree cleanup) land, so isolated modes keep
+refusing at EXECUTION (fail closed).
+
 PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
 1 can mount a procfs showing the sandbox's own processes) and runs the
 workload inside the new root; a failed or unverifiable boundary aborts
@@ -111,6 +125,7 @@ from agent_sandbox.isolation import cgroups as cgroups_mod
 from agent_sandbox.isolation import credentials as cred_mod
 from agent_sandbox.isolation import environment as env_mod
 from agent_sandbox.isolation import filesystem as fs_mod
+from agent_sandbox.isolation import output as output_mod
 from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, resources as resources_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import InitFailureCode, InitStage, SecurityMode, StageCheck
@@ -137,6 +152,8 @@ class SandboxRun:
 
     exit_code: int
     output: str
+    truncated: bool = False  # S-037: True iff the output bound was hit
+                              # and the session terminated with a notice
 
 
 def enter_all_namespaces() -> NamespaceState:
@@ -160,7 +177,8 @@ def enter_all_namespaces() -> NamespaceState:
 def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                    limits: ResourceLimits | None = None,
                    cgroup_session=None,
-                   env_allowlist: tuple[str, ...] | None = None
+                   env_allowlist: tuple[str, ...] | None = None,
+                   output_mb: int | None = None
                    ) -> SandboxRun:
     """Run ``fn`` inside the full sandbox boundary.
 
@@ -182,6 +200,12 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     host env NEVER inherited, S-034) after the cgroup join and verifies
     the live environment (exactly the allowlisted variables with exactly
     the approved values) BEFORE the workload fn.
+    With ``output_mb`` (Step 13): the supervisor reads stdout/stderr
+    through a bounded pipe (S-037); past the limit it terminates the
+    session and marks ``SandboxRun.truncated`` (a truncation notice is
+    appended to the output). The bound cannot be bypassed by the
+    workload - the pipe is the only output channel, and the kernel
+    enforces it (EPIPE/SIGPIPE once the read end is closed).
 
     The supervisor stays outside; the kernel enforces the boundary for
     fn's whole process tree. Any boundary failure aborts BEFORE fn runs
@@ -283,15 +307,31 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
 
     # Supervisor side: collect output, reap the controlled child.
     os.close(out_w)
-    output = b""
-    while True:
-        chunk = os.read(out_r, 65536)
-        if not chunk:
-            break
-        output += chunk
+    bound = output_mb if output_mb is not None else (
+        limits.output_mb if limits is not None else None)
+    if bound is None:
+        # Namespace-only test seam (no resource stage): unbounded read.
+        output = b""
+        while True:
+            chunk = os.read(out_r, 65536)
+            if not chunk:
+                break
+            output += chunk
+        _, status = os.waitpid(pid, 0)
+        return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
+                          output=output.decode(errors="replace"))
+    # S-037 (Step 13): bounded read; past the limit the supervisor
+    # terminates the session (closes the read end + kills the controlled
+    # child - further workload writes then fail with EPIPE/SIGPIPE). The
+    # workload cannot bypass the bound: the pipe is the only channel.
+    limit_bytes = bound * output_mod.MIB
+    data, truncated = output_mod.collect_bounded(out_r, pid, limit_bytes)
     _, status = os.waitpid(pid, 0)
+    text = data.decode(errors="replace")
+    if truncated:
+        text += output_mod.truncation_notice(bound)
     return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
-                      output=output.decode(errors="replace"))
+                      output=text, truncated=truncated)
 
 
 def _pid1_verification(state: NamespaceState) -> str:
