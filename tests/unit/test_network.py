@@ -673,9 +673,9 @@ class FailureModeTests(unittest.TestCase):
 
 class IntegrationTests(unittest.TestCase):
     @skip_unless_linux
-    def test_network_probe_ok_and_hardened_refuses_at_privileges(self):
-        # Full real path: namespaces + filesystem + network boundary
-        # verified, then HARDENED refuses at PRIVILEGES (the next
+    def test_network_probe_ok_and_hardened_refuses_at_seccomp(self):
+        # Full real path: namespaces + filesystem + network + no_new_privs
+        # boundary verified, then HARDENED refuses at SECCOMP (the next
         # unimplemented stage).
         ok, reason = _fs_available()
         if not ok:
@@ -689,7 +689,7 @@ class IntegrationTests(unittest.TestCase):
         with unittest.mock.patch.object(init_mod, "_is_linux", return_value=True):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.PRIVILEGES)
+        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
         self.assertIn("no implementation", result.failure.reason)
 

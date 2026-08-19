@@ -315,3 +315,65 @@ point advances to PRIVILEGES.
   CAP_NET_ADMIN) until Steps 12-13 — localhost-only, no external path
   (verified); netlink EOPNOTSUPP behavior is environment-specific and
   not the security mechanism.
+
+## Phase 1 Step 6 — no_new_privs results (2026-08-19)
+
+Mechanism implemented: `prctl(PR_SET_NO_NEW_PRIVS, 1)` established in
+sandbox PID 1 immediately before the workload function runs, with the
+KERNEL STATE read back and verified (`prctl(PR_GET_NO_NEW_PRIVS) == 1`)
+— never "the prctl set call returned success"
+(`agent_sandbox/isolation/privileges.py`, syscall wrapper in
+`isolation/syscalls.py`, x86_64 157 / aarch64 167). Placement per
+ADR-008: no_new_privs precedes the Step 13 seccomp filter install (an
+unprivileged process may only load a filter after no_new_privs is set)
+and precedes any untrusted exec. Any failure or unexpected read-back is
+REFUSAL (fail closed) — the workload fn never runs on an unverified
+privilege state. HARDENED refusal point advances to SECCOMP.
+
+### Mechanism semantics
+
+- The bit is inherited across fork and exec: setting it in PID 1 covers
+the entire workload tree. setuid/setgid binaries and file capabilities
+become inert from that point (S-010, THREAT_MODEL T-023).
+- The kernel enforces it irrevocably — nothing inside the sandbox can
+clear it.
+- Verification is a kernel-state read-back of the calling thread's
+current value (PR_GET_NO_NEW_PRIVS returns 0 or 1); value != 1 is a
+refusal, never a warning-and-continue.
+
+### Container-validated results (Docker Desktop, WSL2 kernel, uid 1001, seccomp=unconfined)
+
+- **19/19 Step 6 tests PASS** (real Linux execution): raw read-back == 1
+  inside sandbox PID 1 (uid 0, pid 1); ORDERING verified — with the
+  prctl seam failing, the workload fn's host marker never appears (fn
+  never executes) and the run fails with the explicit no_new_privs
+  reason; setup failure refuses; verification failure (read-back 0)
+  refuses; unexpected read-back (2) refuses; probe ok (read-back
+  verified in PID 1); probe setup-failure and read-back-mismatch
+  refusals; full real chain (namespaces + filesystem + network +
+  privileges) then HARDENED refuses at SECCOMP (STAGE_UNAVAILABLE).
+- Same substrate caveat as Steps 2-5 (Docker seccomp=unconfined to
+  exercise OUR code; the product filter is Step 13).
+
+### Native ubuntu CI (authoritative) — substrate limitation unchanged
+
+| Check | 3.11 | 3.12 |
+|---|---|---|
+| no_new_privs real-path tests | SKIPPED (recorded reason: setgroups deny EACCES — rootless mapping cannot be established on the runner) | same |
+| host-side wrapper/fail-closed/failure-injection tests | PASS | PASS |
+| Skeleton / namespace / rootfs / procdev / network regression | PASS | PASS |
+| Seccomp regression gate + behavioral probe | PASS | PASS |
+
+### Step 6 labels
+
+- **DESIGN INTENT** (ADR-008, S-010): no_new_privs before any untrusted
+exec and before the seccomp install; never bypassed, never downgraded.
+- **DOCKER VERIFIED**: establishment + kernel-state read-back + ordering
+  (workload never executes before the invariant) + all failure/refusal
+  paths, in the real sandbox.
+- **NATIVE VERIFIED**: fail-closed behavior and host-side logic only;
+the full rootless path remains NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: capability reduction (Step 12) and seccomp
+  (Step 13) are not yet implemented — no_new_privs alone is the
+  privilege-gain blocker today, and the complete privilege-reduction
+  surface is not claimed until those land.

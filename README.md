@@ -84,14 +84,15 @@ verifies both halves: legitimate workloads pass, and
   six identity-verified host bind-mounts (ADR-015); the workload can
   toggle its own loopback (ns-local CAP_NET_ADMIN) until the Step 12
   capability drop — localhost-only, zero external path (documented
-  residual); privileges, no_new_privs, seccomp, resources are not yet
-  (Steps 11+).
+  residual); `no_new_privs` is established in sandbox PID 1 and its
+  kernel state read back and verified (Step 6, S-010); capability
+  reduction, seccomp, resources are not yet (Steps 12+).
 
 ## Validation labeling
 
 | Substrate | Status | Purpose |
 |---|---|---|
-| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests + proc/dev/sys boundary tests + network deny-by-construction tests | Security claims |
+| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests + proc/dev/sys boundary tests + network deny-by-construction tests + no_new_privs tests | Security claims |
 | Docker Desktop (container) | Development / reproducible observation; **only substrate where the full rootless mapping + rootfs/pivot_root + proc/dev/sys + network boundary is currently exercised** (uid 1001) | Iteration on Windows; never labeled as native |
 
 **Known native limitation (documented, not hidden)**: the GitHub-hosted

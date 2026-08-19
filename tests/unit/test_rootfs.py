@@ -430,10 +430,10 @@ class GuardAndIntegrationTests(unittest.TestCase):
                       setup._filesystem_guard)
 
     @skip_unless_linux
-    def test_hardened_init_refuses_at_privileges(self):
-        # Full real path: namespaces + rootfs + pivot_root + network
-        # boundary verified, then HARDENED refuses at PRIVILEGES (the next
-        # unimplemented stage).
+    def test_hardened_init_refuses_at_seccomp(self):
+        # Full real path: namespaces + rootfs + pivot_root + network +
+        # no_new_privs boundary verified, then HARDENED refuses at SECCOMP
+        # (the next unimplemented stage).
         _require_fs(self)
         src = make_source()
         self.addCleanup(shutil.rmtree, src, True)
@@ -441,7 +441,7 @@ class GuardAndIntegrationTests(unittest.TestCase):
         cfg = RuntimeConfig.from_dict(valid_config(src))
         result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.PRIVILEGES)
+        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
         self.assertIn("no implementation", result.failure.reason)
 

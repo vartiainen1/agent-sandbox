@@ -18,10 +18,10 @@ Rules enforced here:
   refusal is reported (stable, reproducible reasons).
 - Stage guards REGISTER as the mechanisms are implemented (Phase 1 steps
   2+). An unregistered stage that a mode requires => STAGE_UNAVAILABLE
-  refusal. Steps 2-5 register NAMESPACES, FILESYSTEM and NETWORK
-  (isolation/setup, imported lazily by this module); later stages are
-  not, so HARDENED and RESTRICTED initialize only as far as the
-  mechanisms that exist and refuse at the first missing one.
+  refusal. Steps 2-6 register NAMESPACES, FILESYSTEM, NETWORK and
+  PRIVILEGES (isolation/setup, imported lazily by this module); later
+  stages are not, so HARDENED and RESTRICTED initialize only as far as
+  the mechanisms that exist and refuse at the first missing one.
   COMPATIBILITY (no isolation claims) initializes with the structural
   stages only.
 - The platform seam is ``_is_linux()`` - a single patchable helper. Tests
