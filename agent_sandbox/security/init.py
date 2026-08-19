@@ -18,17 +18,21 @@ Rules enforced here:
   refusal is reported (stable, reproducible reasons).
 - Stage guards REGISTER as the mechanisms are implemented (Phase 1 steps
   2+). An unregistered stage that a mode requires => STAGE_UNAVAILABLE
-  refusal. Steps 2-10 register NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES,
-  SECCOMP and RESOURCES (isolation/setup, imported lazily by this
-  module); later stages are not, so HARDENED and RESTRICTED initialize
-  only as far as the mechanisms that exist and refuse at the first
-  missing one. RESOURCES is complete (Steps 9-10): rlimits always + cgroup
-  v2 for HARDENED (all four controllers in a delegated subtree, READING A
-  ADR-007). When delegation is unavailable, HARDENED refuses AT RESOURCES
-  with the precise detected reason (read-only / not delegated / missing
-  controller / unresolvable io device) - never a partial success; when
-  it is established, HARDENED advances. RESTRICTED completes its
-  RESOURCES stage with rlimits only (ADR-007).
+  refusal. Steps 2-11 register NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES,
+  SECCOMP, RESOURCES and ENVIRONMENT (isolation/setup, imported lazily by
+  this module); later stages are not, so HARDENED and RESTRICTED
+  initialize only as far as the mechanisms that exist and refuse at the
+  first missing one. RESOURCES is complete (Steps 9-10): rlimits always +
+  cgroup v2 for HARDENED (all four controllers in a delegated subtree,
+  READING A ADR-007). When delegation is unavailable, HARDENED refuses AT
+  RESOURCES with the precise detected reason (read-only / not delegated /
+  missing controller / unresolvable io device) - never a partial
+  success; when it is established, HARDENED advances. ENVIRONMENT is
+  complete (Step 11): the approved six-variable sandbox environment
+  (PATH/HOME/TMPDIR/LANG/LC_ALL/TERM - host env never inherited, S-034)
+  is constructed, applied and verified in PID 1. RESTRICTED completes its
+  RESOURCES stage with rlimits only (ADR-007) and both isolated modes
+  now refuse at EXECUTION (the next unimplemented stage).
   COMPATIBILITY (no isolation claims) initializes with the structural
   stages only.
 - The platform seam is ``_is_linux()`` - a single patchable helper. Tests

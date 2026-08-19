@@ -725,3 +725,79 @@ delegated cgroupfs — no syscall expansion; gate still 45).
   remains unverified until a systemd `Delegate=yes` (or equivalent)
   writable delegated subtree exists; io.max requires a resolvable
   backing device in the enforcement substrate.
+
+## Phase 1 Step 11 — environment sanitization results (2026-08-19)
+
+### Policy (approved Step 11 policy, ADR-009, S-034, T-018, T-051)
+
+The host environment is NEVER inherited. PID 1 constructs exactly these
+six deterministic sandbox-local variables and drops everything else:
+
+    PATH=/usr/local/bin:/usr/bin:/bin
+    HOME=/home
+    TMPDIR=/tmp
+    LANG=C.UTF-8
+    LC_ALL=C.UTF-8
+    TERM=dumb
+
+env_allowlist semantics: the six are the COMPLETE v0.1 supported set;
+config.py REJECTS any env_allowlist entry beyond them with an explicit
+ConfigError (no value source in v0.1 — secret/environment-value injection
+is explicitly deferred, ARCHITECTURE §11). Host values are never copied,
+merged, or selectively inherited.
+
+### Mechanism (isolation/environment.py)
+
+- `construct_environment(allowlist)` — exactly {name: approved-value} for
+  the allowlisted names; anything else fails closed (no guessed values).
+- `apply_environment(environment)` — replaces the process environment
+  entirely (clear + set); any failure is a refusal.
+- `verify_environment(allowlist)` — reads the LIVE process environment
+  back and requires exactly the allowlisted variables with exactly the
+  approved values; any unexpected variable, missing variable, or
+  incorrect value is a refusal with the precise reason.
+- `sanitize_and_verify(allowlist)` — construct → apply → verify, applied
+  in PID 1 AFTER the resource stage (cgroup join) and BEFORE the workload
+  fn. Pure process state: no syscalls — seccomp untouched (gate 45).
+- All mutation behind seams for deterministic failure injection; Windows
+  import-safe.
+
+### Ordering
+
+proc → network → no_new_privs → capability reduction → seccomp → rlimits
+→ cgroup → **environment sanitization** → workload. ENVIRONMENT stage
+guard registers; HARDENED/RESTRICTED now advance past ENVIRONMENT and
+refuse at EXECUTION (the next unimplemented stage) — never a silent pass.
+
+### Verification evidence (labels kept separate)
+
+- **HOST-SIDE VERIFIED (Windows 284 OK)**: construction, apply/verify
+  semantics, unexpected/missing/incorrect-variable refusals, config
+  rejection of entries beyond the six (GITHUB_TOKEN / AWS_* /
+  SSH_AUTH_SOCK rejected), substitution-failure refusals, no-host-value
+  reads (hostile PATH/HOME/TMPDIR injected → constructed env ignores
+  them).
+- **DOCKER VERIFIED (uid 1001 container, real sandbox under the ACTUAL
+  runtime filter)**: workload sees exactly the approved six
+  (PATH=/usr/local/bin:/usr/bin:/bin, HOME=/home, TMPDIR=/tmp,
+  LANG=LC_ALL=C.UTF-8, TERM=dumb); host variables (PATH=/evil,
+  GITHUB_TOKEN, AWS_ACCESS_KEY_ID, SSH_AUTH_SOCK) NEVER reach the
+  workload; sanitization failure refuses with the workload marker absent;
+  one workload-time view confirms NoNewPrivs=1, Seccomp=2, all capability
+  sets zero, and the approved environment together — Steps 6-10
+  invariants preserved. 30/30 Step 11 tests + full suite 284 OK.
+- **NATIVE**: host-side policy/config/failure tests PASS; sandbox-internal
+  tests SKIP with the recorded setgroups/AppArmor reason (never PASS).
+
+### Step 11 labels
+
+- **DESIGN INTENT** (ADR-009, S-034): six constructed variables; host env
+  never inherited; value injection deferred.
+- **DOCKER VERIFIED**: construction + leakage prevention + refusal paths
+  in the real sandbox under the installed filter.
+- **NATIVE VERIFIED**: host-side logic and fail-closed behavior; full
+  rootless sandbox path NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: the ENVIRONMENT stage is complete, but EXECUTION
+  (bounded output, timeout, process-tree cleanup) is the next
+  unimplemented stage — isolated modes still refuse there; rootless
+  cgroup enforcement remains the Step 10 open item.

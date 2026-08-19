@@ -549,7 +549,8 @@ class IntegrationTests(unittest.TestCase):
         # is unavailable on this substrate (Docker rootless: cgroupfs
         # read-only) - the refusal point stays at RESOURCES, fail closed.
         # On a delegation-capable host this probe would pass and the
-        # refusal would advance to ENVIRONMENT (asserted by the
+        # refusal would advance past ENVIRONMENT (Step 11 sanitization)
+        # to EXECUTION, the next unimplemented stage (asserted by the
         # privileged-substrate tests in test_cgroups.py).
         _require_fs(self)
         src = make_source()

@@ -16,6 +16,29 @@ access (design §14, §16).
   builds an explicit environment from an allowlist: `PATH`, `HOME`, `LANG`,
   `LC_ALL`, `TERM`, `TMPDIR` (all pointing inside the sandbox) plus
   policy-declared variables. Everything else is dropped.
+
+## Step 11 policy values (approved 2026-08-19)
+
+The six constructed variables with their exact deterministic
+sandbox-local values (isolation/environment.py, config.py
+DEFAULT_ENV_ALLOWLIST):
+
+    PATH=/usr/local/bin:/usr/bin:/bin
+    HOME=/home
+    TMPDIR=/tmp
+    LANG=C.UTF-8
+    LC_ALL=C.UTF-8
+    TERM=dumb
+
+env_allowlist semantics: the six are the COMPLETE v0.1 supported
+environment set. Any env_allowlist entry beyond them is REJECTED at
+configuration validation with an explicit ConfigError - there is no value
+source in v0.1 (secret/environment-value injection is explicitly
+deferred, ARCHITECTURE section 11), so accepting the name would be a
+silent no-op. Host values are never copied, merged, or selectively
+inherited; the workload receives only the constructed environment
+(verified from the live process environment in PID 1 before the workload
+function, S-034).
 - **No host sockets** are ever exposed (S-004): Docker socket, SSH agent,
   K8s, credential managers are absent from the rootfs (ADR-005) and the
   network namespace (ADR-006).

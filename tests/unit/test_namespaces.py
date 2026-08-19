@@ -197,29 +197,41 @@ class NamespaceCreationTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_host_process_invisibility(self):
-        # Kernel-enforced: only the sandbox's own processes exist in the new
-        # PID namespace. The host/test-process pid and nearby pids must not
-        # resolve to anything in /proc (which reflects the READER's PID
-        # namespace). kill(2) is denied under the Step 8 filter - /proc
-        # existence is the probe (and kill being denied is itself a
-        # stronger property: the workload cannot signal processes either).
-        # Edge case: when the test process IS pid 1 (as in a container),
-        # its own pid is legitimately visible because the fn process
-        # itself is sandbox PID 1 - the assertion tolerates exactly that
-        # one pid.
+        # Kernel-enforced property of THIS path (namespaces only, no rootfs):
+        # the workload cannot signal host processes - kill(2) is denied
+        # (EPERM) by the Step 8 filter for EVERY pid, host pids included,
+        # and the workload is PID 1 of its own PID namespace (so the raw
+        # pid it sees is 1, never the host pid). NOTE: the namespace-only
+        # path never remounts /proc - it inherits the container's procfs
+        # mount, which shows the container's PID namespace, so a /proc
+        # existence probe against host pids is pid-layout-dependent (the
+        # container may allocate pids that then resolve through the
+        # inherited mount). The AUTHORITATIVE host-process invisibility
+        # evidence (fresh procfs + hidepid=2, only sandbox PID 1 visible)
+        # is the rootfs path: test_procdev.test_host_processes_not_visible.
         host_pid = os.getpid()
 
         def fn(state):
-            visible = []
-            for pid in (host_pid, host_pid + 1, host_pid + 2):
-                if os.path.exists(f"/proc/{pid}"):
-                    visible.append(pid)
-            legit_self = {1}  # sandbox PID 1 = the fn process itself
-            if set(visible) <= legit_self:
-                return "HOST_PROCESS_INVISIBLE"
-            return f"HOST_PROCESS_VISIBLE:{sorted(visible)}"
+            outcomes = {}
+            for pid in (host_pid, 2, 999999):
+                try:
+                    os.kill(pid, 0)
+                    outcomes[str(pid)] = "signalable"
+                except ProcessLookupError:
+                    outcomes[str(pid)] = "esrch"
+                except PermissionError:
+                    outcomes[str(pid)] = "eperm"
+            return json.dumps({"raw_pid": os.getpid(), "kill": outcomes})
 
-        self.assertEqual(_run(fn), "HOST_PROCESS_INVISIBLE")
+        data = json.loads(_run(fn))
+        # The workload is PID 1 of its own PID namespace - it NEVER sees
+        # the host/test-process pid as its own.
+        self.assertEqual(data["raw_pid"], 1)
+        # kill(2) is seccomp-denied: the workload cannot signal host
+        # processes (or anything else) - EPERM, not signalable.
+        for outcome in data["kill"].values():
+            self.assertEqual(outcome, "eperm",
+                             "workload must not be able to signal processes")
 
     @skip_unless_linux
     def test_mount_namespace_creation(self):

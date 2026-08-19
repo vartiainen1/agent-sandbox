@@ -170,6 +170,16 @@ def _parse_env_allowlist(value) -> tuple[str, ...]:
             raise ConfigError("env_allowlist: entries must be non-empty strings")
         if any(ch.isspace() or ch == "=" for ch in name):
             raise ConfigError(f"env_allowlist: invalid variable name {name!r}")
+        # Step 11 policy (ARCHITECTURE.md section 11, ADR-009, S-034):
+        # the six constructed variables are the COMPLETE v0.1 supported
+        # environment set. Anything beyond them has no value source in
+        # v0.1 (secret/environment-value injection is explicitly deferred),
+        # so accepting the name would be a silent no-op - reject it.
+        if name not in DEFAULT_ENV_ALLOWLIST:
+            raise ConfigError(
+                f"env_allowlist: {name!r} is not a supported v0.1 "
+                "environment variable (only PATH, HOME, LANG, LC_ALL, TERM, "
+                "TMPDIR are constructed; value injection is deferred)")
         out.append(name)
     if len(out) != len(set(out)):
         raise ConfigError("env_allowlist: duplicate entries are not allowed")

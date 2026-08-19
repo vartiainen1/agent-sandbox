@@ -78,6 +78,15 @@ HARDENED REFUSE AT RESOURCES with the precise reason - never a partial
 success (RESTRICTED completes its RESOURCES stage with rlimits only,
 ADR-007, and advances to ENVIRONMENT).
 
+Step 11 (environment sanitization, S-034, ADR-009): PID 1 constructs the
+approved six-variable sandbox environment (PATH/HOME/TMPDIR/LANG/LC_ALL/
+TERM - the host environment is NEVER inherited), replaces the process
+environment and verifies the LIVE environment (exactly the allowlisted
+variables with exactly the approved values, no host variable present)
+after the cgroup join and BEFORE the workload fn (environment.py). The
+ENVIRONMENT stage registers; HARDENED/RESTRICTED advance past it to the
+next unimplemented stage (EXECUTION) and refuse there.
+
 PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
 1 can mount a procfs showing the sandbox's own processes) and runs the
 workload inside the new root; a failed or unverifiable boundary aborts
@@ -97,8 +106,9 @@ import shutil
 import sys
 from dataclasses import dataclass
 
-from agent_sandbox.config import ResourceLimits
+from agent_sandbox.config import DEFAULT_ENV_ALLOWLIST, ResourceLimits
 from agent_sandbox.isolation import cgroups as cgroups_mod
+from agent_sandbox.isolation import environment as env_mod
 from agent_sandbox.isolation import filesystem as fs_mod
 from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, resources as resources_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
@@ -148,7 +158,9 @@ def enter_all_namespaces() -> NamespaceState:
 
 def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                    limits: ResourceLimits | None = None,
-                   cgroup_session=None) -> SandboxRun:
+                   cgroup_session=None,
+                   env_allowlist: tuple[str, ...] | None = None
+                   ) -> SandboxRun:
     """Run ``fn`` inside the full sandbox boundary.
 
     Namespaces only (Step 2): ``fn(state)`` - state is the verified
@@ -164,6 +176,11 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     host-side by the supervisor in the delegated subtree; PID 1 migrates
     itself into it (cgroup.procs) after the rlimits and verifies
     membership + all four limit read-backs BEFORE the workload fn.
+    With ``env_allowlist`` (Step 11): PID 1 constructs the approved
+    six-variable sandbox environment (PATH/HOME/TMPDIR/LANG/LC_ALL/TERM -
+    host env NEVER inherited, S-034) after the cgroup join and verifies
+    the live environment (exactly the allowlisted variables with exactly
+    the approved values) BEFORE the workload fn.
 
     The supervisor stays outside; the kernel enforces the boundary for
     fn's whole process tree. Any boundary failure aborts BEFORE fn runs
@@ -221,6 +238,15 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                     resources_mod.establish_and_verify_rlimits(limits)
                 if cgroup_session is not None:
                     cgroups_mod.join_and_verify(cgroup_session, os.getpid())
+                # Step 11: sanitize the environment in PID 1 AFTER the
+                # resource stage and BEFORE the workload fn - construct
+                # the approved six variables (host env never inherited,
+                # S-034), replace the process environment, then read the
+                # LIVE environment back and require exactly the
+                # allowlisted variables with the approved values. Any
+                # failure refuses (workload never executes on a partial
+                # environment).
+                env_mod.sanitize_and_verify(env_allowlist)
             except BaseException as e:  # noqa: BLE001
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
@@ -768,6 +794,65 @@ def _resources_guard(config) -> StageCheck:
     return resources_probe(config)
 
 
+def environment_probe(config) -> StageCheck:
+    """Real-path probe of the ENVIRONMENT mechanism (construct the
+    approved six-variable sandbox environment - host env never inherited,
+    S-034 - replace the process environment and verify the LIVE
+    environment: exactly the allowlisted variables with exactly the
+    approved values), run in a forked child so the supervisor never
+    inherits a sanitized environment.
+
+    ENVIRONMENT-stage shape (ADR-009): the workload environment is the
+    six constructed variables only (PATH/HOME/TMPDIR/LANG/LC_ALL/TERM -
+    config rejects anything beyond them). Any construction, replacement,
+    or verification failure is a refusal with the precise reason."""
+    return _environment_probe_impl(config)
+
+
+def _environment_probe_impl(config) -> StageCheck:
+    """Run the real sanitization in a forked child (the supervisor's own
+    environment is never mutated - the child replaces only its own).
+    """
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            env_mod.sanitize_and_verify(config.env_allowlist)
+            os.write(write_fd, b"OK")
+        except BaseException as e:  # noqa: BLE001
+            os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
+        os._exit(0)
+    os.close(write_fd)
+    data = b""
+    while True:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+    _, status = os.waitpid(pid, 0)
+    msg = data.decode(errors="replace").strip()
+    if msg == "OK":
+        return StageCheck(
+            ok=True,
+            reason="approved six-variable sandbox environment constructed, "
+                   "applied and verified in a real forked child: exactly "
+                   "PATH/HOME/LANG/LC_ALL/TERM/TMPDIR with the approved "
+                   "values, no host variable present (host env never "
+                   "inherited, S-034)")
+    return StageCheck(
+        ok=False, code=InitFailureCode.STAGE_FAILED,
+        reason=msg or f"environment probe child failed (status {status}) - "
+                      "fail closed, workload not executed")
+
+
+def _environment_guard(config) -> StageCheck:
+    """ENVIRONMENT stage guard (registered below). Probes the real
+    sanitization + verification; HARDENED/RESTRICTED refuse unless the
+    constructed environment is established and verified."""
+    return environment_probe(config)
+
+
 # Register the guards with the enforcement core. This module is imported
 # lazily by SecurityInitializer (and directly by tests), so the registry
 # sees each mechanism exactly when it exists - never before.
@@ -777,3 +862,4 @@ _security_init.register_stage_guard(InitStage.NETWORK, _network_guard)
 _security_init.register_stage_guard(InitStage.PRIVILEGES, _privileges_guard)
 _security_init.register_stage_guard(InitStage.SECCOMP, _seccomp_guard)
 _security_init.register_stage_guard(InitStage.RESOURCES, _resources_guard)
+_security_init.register_stage_guard(InitStage.ENVIRONMENT, _environment_guard)

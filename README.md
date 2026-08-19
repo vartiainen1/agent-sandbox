@@ -17,7 +17,7 @@ audited.
 |---|---|
 | Architecture + threat model (Phase 0) | **COMPLETE** — `ARCHITECTURE.md`, `THREAT_MODEL.md`, `SECURITY_SPEC.md`, `ADRs/` |
 | Seccomp syscall allowlist derivation (Phase 1 pre-task) | **COMPLETE, container-validated** — 45-syscall HARDENED allowlist, behaviorally verified |
-| Runtime implementation (Phase 1) | **IN PROGRESS (Step 10)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) + `/proc` isolation (`hidepid=2`), minimal `/dev` (six identity-verified bind-mounted nodes, ADR-015), `/sys` absence (Step 4) + network namespace deny-by-construction (only `lo` DOWN, no addresses/routes, no usable path — Step 5) + no_new_privs (Step 6) + full capability reduction (Step 7) + seccomp filter installation (Step 8) + rlimits (Step 9) + cgroup v2 enforcement module (Step 10) implemented and tested; still no runnable sandbox/CLI |
+| Runtime implementation (Phase 1) | **IN PROGRESS (Step 11)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) + `/proc` isolation (`hidepid=2`), minimal `/dev` (six identity-verified bind-mounted nodes, ADR-015), `/sys` absence (Step 4) + network namespace deny-by-construction (only `lo` DOWN, no addresses/routes, no usable path — Step 5) + no_new_privs (Step 6) + full capability reduction (Step 7) + seccomp filter installation (Step 8) + rlimits (Step 9) + cgroup v2 enforcement module (Step 10) + environment sanitization (Step 11, the approved six-variable sandbox environment — host env never inherited, S-034) implemented and tested; still no runnable sandbox/CLI |
 
 This repository currently contains the security design, the reproducible
 seccomp derivation tooling, and the first Phase 1 runtime mechanisms
@@ -25,7 +25,7 @@ seccomp derivation tooling, and the first Phase 1 runtime mechanisms
 `/proc`+`/dev`+`/sys` boundary, network deny-by-construction, no_new_privs,
 capability reduction, seccomp installation, rlimits, cgroup v2). **There
 is still no runnable sandbox**; HARDENED initialization refuses at the
-first mechanism that is not yet implemented (currently `environment`),
+first mechanism that is not yet implemented (currently `execution`),
 and refuses AT `resources` with the precise detected reason on hosts
 without cgroup v2 delegation (ADR-007), so nothing here should be used
 to sandbox a workload.
