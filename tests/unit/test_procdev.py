@@ -485,6 +485,39 @@ class ProcMountTests(unittest.TestCase):
                             f"{p} exposed real kernel data to the sandbox "
                             f"({r.get('text', r)!r})")
 
+class RootfsHostSideTests(unittest.TestCase):
+    """Host-side rootfs checks - no sandbox needed, run everywhere
+    (including native CI, mirroring test_rootfs.RootfsBuildTests)."""
+
+    def setUp(self):
+        self.src = make_source()
+        self.addCleanup(shutil.rmtree, self.src, True)
+
+    def test_sys_not_in_rootfs_tree(self):
+        # The built rootfs tree contains no sys directory at all - absence
+        # by construction (ADR-005), before any sandbox is involved.
+        state = rootfs_mod.build_rootfs(self.src)
+        self.addCleanup(shutil.rmtree, state.layout.dir, True)
+        self.assertFalse(os.path.exists(os.path.join(state.layout.dir, "sys")))
+
+    def test_rootfs_tree_has_no_device_nodes(self):
+        # Device provisioning is bind-mount-only (ADR-015): the host-side
+        # tree must contain ZERO device nodes - no mknod anywhere, nothing
+        # to inherit. (The six devices appear only inside the sandbox's
+        # private /dev tmpfs, bound during namespace setup.)
+        state = rootfs_mod.build_rootfs(self.src)
+        self.addCleanup(shutil.rmtree, state.layout.dir, True)
+        devices = []
+        for dirpath, _dirnames, filenames in os.walk(state.layout.dir):
+            for n in filenames:
+                st = os.lstat(os.path.join(dirpath, n))
+                if stat_mod.S_ISCHR(st.st_mode) or stat_mod.S_ISBLK(st.st_mode):
+                    devices.append(os.path.join(dirpath, n))
+        self.assertEqual(devices, [],
+                         "rootfs tree must contain no device nodes: "
+                         + str(devices))
+
+
 class SysAbsenceTests(unittest.TestCase):
     """/sys: absence is the mechanism (ADR-005) - no sysfs mount, no
     sysfs dir, no reachable host sysfs information."""
@@ -534,13 +567,6 @@ class SysAbsenceTests(unittest.TestCase):
                         data["syslink"])
         self.assertFalse(data["sysfs_mount"])
         self.assertFalse(data["sys_exists"])
-
-    def test_sys_not_in_rootfs_tree(self):
-        # Host-side (runs everywhere): the built rootfs tree contains no
-        # sys directory at all.
-        state = rootfs_mod.build_rootfs(self.src)
-        self.addCleanup(shutil.rmtree, state.layout.dir, True)
-        self.assertFalse(os.path.exists(os.path.join(state.layout.dir, "sys")))
 
 
 class HostBatteryTests(unittest.TestCase):
