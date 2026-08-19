@@ -66,6 +66,9 @@ jobs:
       - name: credential/socket isolation tests (host path absence, socket env, denial, fail-closed - authoritative)
         run: python -m unittest tests.unit.test_credentials -v
 
+      - name: bounded output tests (S-037 bounded pipe, truncation notice, no bypass, fail-closed - authoritative)
+        run: python -m unittest tests.unit.test_output -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 

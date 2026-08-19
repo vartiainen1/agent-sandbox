@@ -851,3 +851,59 @@ verifies the constructed env carries no socket/credential variable.
   (bounded output, timeout, process-tree cleanup) remains the next
   unimplemented stage; rootless cgroup enforcement remains the Step 10
   open item.
+## Phase 1 Step 13 — bounded stdout/stderr results (2026-08-19)
+
+Policy (S-037, ARCHITECTURE section 9, ADR-007): the workload must not
+be able to generate unlimited output that exhausts host resources. The
+supervisor reads stdout/stderr through a bounded pipe; past the limit it
+terminates the session with a truncation notice. The bound is ENFORCED,
+not observed: the pipe is the only output channel into the supervisor,
+and once the read end is closed past the limit the workload's further
+writes hit EPIPE/SIGPIPE (kernel-enforced) - the workload cannot bypass
+the bound. The limit value is the validated config `output_mb` (default
+50 MiB, ResourceLimits, >= 1).
+
+Mechanism (`isolation/output.py`): `read_bounded` reads at most
+limit_bytes (plus a one-byte EOF probe so exactly-at-limit with EOF is a
+COMPLETE run, not a false truncation); `collect_bounded` (supervisor
+side) terminates the session on truncation (closes the read end + kills
+the controlled child). Wired into `run_in_sandbox` supervisor-side:
+`SandboxRun.truncated` + a deterministic truncation notice in the
+output. The EXECUTION stage guard still does NOT register (items 19-20 -
+timeout, process-tree cleanup - are outstanding), so the isolated modes
+keep refusing at EXECUTION (fail closed).
+
+### Step 13 evidence
+
+- **HOST-SIDE VERIFIED** (Windows 322 OK / 150 substrate skips):
+  under/at/over-limit reads, EOF probe semantics, zero/negative-limit
+  fail-closed, read-failure fail-closed, chunking, deterministic notice,
+  session-termination seam tests (kill invoked with SIGKILL, missing
+  child tolerated).
+- **DOCKER VERIFIED** (uid 1001, real sandbox under the ACTUAL filter):
+  small output complete (truncated=False); 2 MiB against 1 MiB bound ->
+  truncated=True, notice present, output length bounded, session
+  terminated; 4 MiB hostile output -> never more than the bound captured
+  (workload cannot bypass).
+- **NATIVE VERIFIED**: host-side logic and fail-closed behavior; full
+  rootless sandbox path NOT VERIFIED NATIVE (recorded AppArmor/setgroups
+  substrate reason).
+- **SEPARATION**: no syscall added - the bounded pipe uses only the
+  already-allowlisted read/write/close on the supervisor side; gate
+  remains exactly 45.
+- **INVARIANTS PRESERVED**: NoNewPrivs=1, cap sets zero, filter
+  installed, rlimits enforced, cgroup controls preserved where delegated,
+  six-variable sanitized env intact, credential/socket boundary intact.
+
+### Step 13 labels
+
+- **DESIGN INTENT** (S-037): bounded supervisor pipe -> terminate +
+  truncation notice; output cannot exhaust host resources.
+- **DOCKER VERIFIED**: real bounded read under the actual filter,
+  truncation + termination + no-bypass demonstrated.
+- **NATIVE VERIFIED**: host-side logic + fail-closed; sandbox-internal
+  path NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: EXECUTION stage guard still unregistered (items
+  19-20 - external timeout, process-tree cleanup - outstanding), so
+  isolated modes keep refusing at EXECUTION; rootless cgroup enforcement
+  remains the Step 10 open item.
