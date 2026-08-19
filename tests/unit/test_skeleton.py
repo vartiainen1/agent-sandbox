@@ -31,8 +31,8 @@ from agent_sandbox import config as config_mod
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.isolation import setup as setup_mod
 from agent_sandbox.models import (
-    ConfigError, ExecutionRefused, InitFailureCode, InitResult, InitStage,
-    SecurityMode, StageCheck)
+    ConfigError, ExecutionRefused, ExecutionRequest, InitFailureCode,
+    InitResult, InitStage, SecurityMode, StageCheck)
 from agent_sandbox.runtime.session import RuntimeSession, SessionState
 from agent_sandbox.security import init as init_mod
 from agent_sandbox.security.init import SecurityInitializer, init_sequence
@@ -387,7 +387,7 @@ class SessionGateTests(unittest.TestCase):
     def test_execute_before_init_is_blocked(self):
         session = RuntimeSession(RuntimeConfig.from_dict(valid_config(mode="hardened")))
         self.assertIs(session.state, SessionState.UNINITIALIZED)
-        refusal = session.execute(["echo", "hello"])
+        refusal = session.execute(ExecutionRequest(command=("echo", "hello")))
         self.assertIsInstance(refusal, ExecutionRefused)
         self.assertIn("initialization did not succeed", refusal.reason)
         self.assertEqual(refusal.state, "uninitialized")
@@ -397,22 +397,25 @@ class SessionGateTests(unittest.TestCase):
         result = session.initialize()
         self.assertFalse(result.ok)
         self.assertIs(session.state, SessionState.REFUSED)
-        refusal = session.execute(["echo", "hello"])
+        refusal = session.execute(ExecutionRequest(command=("echo", "hello")))
         self.assertIsInstance(refusal, ExecutionRefused)
         self.assertIn("initialization did not succeed", refusal.reason)
         self.assertEqual(refusal.state, "refused")
 
     def test_execute_after_ready_reaches_execution_gate(self):
-        # COMPATIBILITY initializes structurally; execute then proceeds
-        # past the security gate to the (honestly unimplemented) runner.
+        # COMPATIBILITY initializes structurally to READY; execute then
+        # proceeds through the SOLE enforcement path (session.execute ->
+        # run_in_sandbox) and refuses only when the boundary cannot form
+        # on this substrate (fail closed) - never an unimplemented runner.
         session = RuntimeSession(
             RuntimeConfig.from_dict(valid_config(mode="compatibility")))
         result = session.initialize()
         self.assertTrue(result.ok, result.describe())
         self.assertIs(session.state, SessionState.READY)
-        refusal = session.execute(["echo", "hello"])
-        self.assertIn("execution mechanism not implemented", refusal.reason)
+        refusal = session.execute(ExecutionRequest(command=("echo", "hello")))
+        self.assertIsInstance(refusal, ExecutionRefused)
         self.assertEqual(refusal.state, "ready")
+        self.assertIn("fail closed", refusal.reason)
 
     def test_session_config_is_readonly(self):
         session = RuntimeSession(RuntimeConfig.from_dict(valid_config()))
