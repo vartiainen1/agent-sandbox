@@ -1035,3 +1035,56 @@ substrate.
   remains NOT VERIFIED (Step 2/10 open items, unchanged); the minimal
   successful workload demonstration (item 22) and CLI/MCP integration
   remain later steps.
+
+## Phase 1 Step 16 — minimal successful workload demonstration (2026-08-19)
+
+Item 22, the FINAL mandated Phase 1 item: the first END-TO-END proof
+that a workload can cross the complete v0.1 boundary —
+
+    proc -> network -> NNP -> caps -> seccomp -> rlimits -> cgroup
+    -> environment -> credentials/sockets -> bounded output
+    -> external timeout -> process-tree containment/cleanup -> workload
+
+This step does NOT re-prove each mechanism (Steps 1–15 did). It proves
+SUCCESSFUL WORKLOAD EXECUTION. The minimal workload
+(`tests/unit/test_workload.py`) returns fully deterministic evidence
+collected from INSIDE the boundary, and the supervisor observes a clean
+session.
+
+### Step 16 evidence (DOCKER VERIFIED, uid 1001, actual filter)
+
+Actual workload evidence captured from inside the sandbox:
+
+- exit_code=0, truncated=False, timed_out=False, cleanup_failure=""
+- pid=1 (PID 1 of the sandbox namespace), uid=0, gid=0 (mapped identity)
+- env = exactly PATH=/usr/local/bin:/usr/bin:/bin, HOME=/home,
+  TMPDIR=/tmp, LANG=C.UTF-8, LC_ALL=C.UTF-8, TERM=dumb (S-034)
+- CapInh/CapPrm/CapEff/CapBnd/CapAmb = 0, NoNewPrivs=1, Seccomp=2
+- rlimits soft==hard: RLIMIT_CPU=[300,300], RLIMIT_AS=[4 GiB],
+  RLIMIT_NPROC=[256], RLIMIT_NOFILE=[4096], RLIMIT_FSIZE=[10 GiB],
+  RLIMIT_CORE=[0,0]
+
+Also verified end-to-end: the bound/deadline configuration is ACTIVE
+but not tripped (output_mb=1, wall_time_seconds=60, no truncation/
+timeout); the full fail-closed initializer reaches READY (RESTRICTED)
+and THEN the workload executes; a verification failure refuses with the
+workload marker ABSENT; no host credential/control-socket path is
+reachable and the environment carries exactly the six approved
+variables at workload time. 9 tests: host-side contract + wiring gates
+(run everywhere) + 5 real-sandbox end-to-end tests (DOCKER VERIFIED).
+
+### Step 16 labels
+
+- **DESIGN INTENT** (item 22): minimal successful workload — executes,
+  deterministic output, expected exit, sanitized env in force,
+  invariants observable, bound/deadline active, cleanup complete,
+  verification failure prevents execution, READY only after all guards.
+- **DOCKER VERIFIED**: the complete RESTRICTED-mode path end-to-end
+  (real filter, real boundary, real workload).
+- **NATIVE VERIFIED**: host-side contract + wiring gates; the real
+  sandbox path remains NOT VERIFIED NATIVE (recorded AppArmor/setgroups
+  substrate reason).
+- **KNOWN LIMITATION**: HARDENED-mode end-to-end remains NOT VERIFIED on
+  every current substrate — cgroup v2 delegation is unavailable, so
+  HARDENED correctly refuses AT RESOURCES (Step 10 open item, unchanged);
+  CLI/MCP integration is a separate later phase.
