@@ -1,8 +1,20 @@
-"""Structured audit events - host-side recorder, outside the sandbox.
+"""Audit package (ADR-012): host-side JSONL recorder, session
+correlation, observation only - never enforcement."""
 
-Audit is observation, NOT enforcement (SECURITY_SPEC.md S-024): security
-does not depend on logging. The recorder is part of the trusted host-side
-surface; the workload can never write, truncate, or read the audit
-stream. Implemented in Phase 7; the package exists now to keep the
-security boundary unambiguous (audit is outside the sandbox by design).
-"""
+from agent_sandbox.audit.recorder import (
+    EXECUTION_REFUSED,
+    EXECUTION_REQUEST,
+    EXECUTION_RESULT,
+    INIT_DECISION,
+    SESSION_CREATED,
+    AuditRecorder,
+)
+
+__all__ = [
+    "SESSION_CREATED",
+    "INIT_DECISION",
+    "EXECUTION_REQUEST",
+    "EXECUTION_RESULT",
+    "EXECUTION_REFUSED",
+    "AuditRecorder",
+]

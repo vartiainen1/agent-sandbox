@@ -127,5 +127,56 @@ class ExecutionRefused:
         return f"execution refused (state {self.state}): {self.reason}"
 
 
+class ExecutionRequestError(ValueError):
+    """An invalid execution request rejected at the interface boundary.
+    Message is deterministic."""
+
+
+@dataclass(frozen=True)
+class ExecutionRequest:
+    """A validated workload execution request (ADR-013: validated request
+    -> policy decision -> security-init -> execution).
+
+    ``command`` is an ARGUMENT VECTOR - never a shell command string. No
+    shell is involved anywhere in v0.1 (S-016/S-017: no shell
+    interpretation; argv is passed verbatim into the sandbox).
+    """
+
+    command: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.command:
+            raise ExecutionRequestError(
+                "execution request: empty command (argv must name an "
+                "executable inside the sandbox)")
+        for i, part in enumerate(self.command):
+            if not isinstance(part, str):
+                raise ExecutionRequestError(
+                    f"execution request: argv[{i}] is not a string")
+            if "\x00" in part:
+                raise ExecutionRequestError(
+                    f"execution request: argv[{i}] contains a NUL byte")
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    """Outcome of a workload execution that DID run (the boundary was
+    established - a READY session). Distinct machine-readable outcomes:
+    ``ExecutionRefused`` (never ran), ``ExecutionResult`` with
+    ``exit_code == 0`` (success), and ``ExecutionResult`` with
+    ``exit_code != 0`` (workload or in-boundary failure - the
+    deterministic failure text is in ``output``). ``truncated``/
+    ``timed_out``/``cleanup_failure`` report the Step 13-15 enforcement
+    state."""
+
+    session_id: str
+    mode: SecurityMode
+    exit_code: int
+    output: str
+    truncated: bool = False
+    timed_out: bool = False
+    cleanup_failure: str = ""
+
+
 class ConfigError(ValueError):
     """Configuration rejected at the boundary. Message is deterministic."""

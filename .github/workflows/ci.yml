@@ -78,6 +78,9 @@ jobs:
       - name: minimal successful workload tests (end-to-end item 22 - deterministic output, in-sandbox invariants, READY gate, fail-closed - authoritative)
         run: python -m unittest tests.unit.test_workload -v
 
+      - name: CLI interface tests (execution bridge, argv-only, audit JSONL, fail-closed, no-shell guard - authoritative)
+        run: python -m unittest tests.unit.test_cli -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 

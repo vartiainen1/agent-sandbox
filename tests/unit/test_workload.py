@@ -49,7 +49,7 @@ from agent_sandbox.isolation import credentials as cred_mod
 from agent_sandbox.isolation import environment as env_mod
 from agent_sandbox.security import init as init_mod
 from agent_sandbox.security.init import SecurityInitializer
-from agent_sandbox.models import InitStage
+from agent_sandbox.models import ExecutionRequest, InitStage
 
 from tests.unit import test_credentials as tc
 from tests.unit import test_resources as tr
@@ -168,7 +168,8 @@ class WorkloadGateTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
         self.assertEqual(result.failure.stage, InitStage.EXECUTION)
-        refusal = session.execute(["/bin/echo", "hello"])
+        refusal = session.execute(ExecutionRequest(command=("/bin/echo",
+                                                            "hello")))
         self.assertIsInstance(refusal, ExecutionRefused)
         self.assertIn("initialization did not succeed", refusal.reason)
 

@@ -1088,3 +1088,60 @@ variables at workload time. 9 tests: host-side contract + wiring gates
   every current substrate — cgroup v2 delegation is unavailable, so
   HARDENED correctly refuses AT RESOURCES (Step 10 open item, unchanged);
   CLI/MCP integration is a separate later phase.
+
+## Interface phase sub-phase A — CLI + execution bridge + minimal audit (2026-08-19)
+
+ADR-013: CLI/MCP/API are THIN front-ends over a single enforcement
+core. Sub-phase A implements the CLI + the execution bridge + the
+minimal ADR-012 audit recorder. MCP (sub-phase B) follows after review.
+
+### Mechanism
+
+- `RuntimeSession.execute(ExecutionRequest)` is the SOLE execution
+  entry point: `execute() -> run_in_sandbox()`. No subprocess(),
+  os.system(), host-side execve fallback, or shell anywhere in the
+  interface layer (AST-guarded). The READY/REFUSED gate is unchanged;
+  interface code carries no security policy.
+- The execve bridge (`agent_sandbox/execution/`) represents the CLI
+  command as a workload fn that `os.execve`s the argv INSIDE the
+  established sandbox (execve is in the 45-syscall allowlist).
+  stdout/stderr + exit status continue through the Step 13-15 bounded
+  output, external timeout, and process-tree machinery; the exec'd
+  command inherits the sanitized six-variable environment.
+- CLI (`agent_sandbox/cli.py`): argv-only (`--` separator, never a
+  shell string), `--json` exposes mode + session identity (S-020,
+  S-023), deterministic exit codes (0 / workload exit 1-255 / 2 usage /
+  3 init refused / 4 execution refused).
+- Audit (`agent_sandbox/audit/recorder.py`): host-side JSONL,
+  session-correlated (session_created, init_decision, execution_request,
+  execution_result/refused); observation only (S-024) - a recorder
+  failure never blocks or alters execution; open-per-record so no audit
+  fd can cross the fork boundary into the sandbox.
+
+### Evidence (DOCKER VERIFIED, uid 1001, actual filter, real execve)
+
+- CLI end-to-end `--json`:
+  `{"cleanup_failure": "", "exit_code": 0, "mode": "restricted",
+  "output": "STATIC-ELF-OK\n", "refused": false, "session_id": "<uuid>",
+  "state": "ready", "timed_out": false, "truncated": false}`.
+- The exec'd command (a workspace-provided STATIC ELF walking its own
+  envp) sees EXACTLY the six approved variables at execve time:
+  `HOME=/home, LANG=C.UTF-8, LC_ALL=C.UTF-8,
+  PATH=/usr/local/bin:/usr/bin:/bin, TERM=dumb, TMPDIR=/tmp` (S-034).
+- Exit status propagation (exit 42 observed), unavailable command ->
+  deterministic in-sandbox "FAIL workload: ... No such file" (exit != 0,
+  never a host fallback), shell metacharacters passed verbatim as argv
+  data (no shell), 2 MiB write truncated at a 1 MiB bound (S-037),
+  syscall-free infinite loop terminated by the external deadline with no
+  survivors (S-036, S-038). 31 tests.
+
+### Labels
+
+- **DOCKER VERIFIED**: complete CLI path end-to-end (init -> READY ->
+  execute -> execve inside the boundary -> result/JSON).
+- **NATIVE VERIFIED**: host-side request/audit/CLI logic + fail-closed
+  paths; the real sandbox path remains NOT VERIFIED NATIVE (recorded
+  AppArmor/setgroups substrate reason).
+- **KNOWN LIMITATION (unchanged)**: HARDENED end-to-end and native
+  rootless sandbox-internal execution remain NOT VERIFIED on current
+  substrates; MCP (sub-phase B) and API are not yet implemented.
