@@ -1145,3 +1145,58 @@ minimal ADR-012 audit recorder. MCP (sub-phase B) follows after review.
 - **KNOWN LIMITATION (unchanged)**: HARDENED end-to-end and native
   rootless sandbox-internal execution remain NOT VERIFIED on current
   substrates; MCP (sub-phase B) and API are not yet implemented.
+
+## Interface phase — sub-phase B: MCP stdio JSON-RPC 2.0 front-end (2026-08-19)
+
+DESIGN INTENT (ADR-013): the MCP server is a THIN adapter over the
+single enforcement core — parse/validate -> common ExecutionRequest ->
+RuntimeSession.execute() -> run_in_sandbox() -> result/refusal ->
+JSON-RPC response. It carries NO security policy, never calls
+run_in_sandbox/command_workload directly, never uses
+subprocess/os.system/os.popen/os.execve or a shell, and cannot bypass
+SecurityInitializer or the READY/REFUSED gate. Method surface is the
+minimum actually needed: `initialize` (workspace, mode, optional audit)
+and `execute` (session_id, command argv vector). No invented MCP feature
+set, no handshake beyond that. Stdio framing: one JSON-RPC message per
+line; stdout carries ONLY responses (diagnostics to stderr); EOF
+terminates cleanly.
+
+DOCKER VERIFIED (uid 1001, the actual runtime filter, 37/37 tests):
+- Real `initialize` -> READY session (session_id = uuid hex, mode
+  restricted) and real `execute` of a workspace-provided static ELF
+  through the complete boundary; exit 0, `MCP-ELIF-OK` output,
+  `cleanup_failure == ""`, id preserved (`"id": 2`).
+- Unavailable command -> deterministic in-sandbox failure
+  ("FAIL workload: ... No such file"), never a host fallback.
+- Malformed JSON -> -32700 (id null); unknown method -> -32601
+  (id preserved); neither ever runs a workload; a subsequent valid
+  execute still works.
+- stdio serve() with a real session: stdout lines are all valid
+  JSON-RPC messages (no diagnostics mixed in).
+
+HOST-SIDE VERIFIED (runs everywhere):
+- JSON-RPC 2.0 protocol: id preservation (string/number), notifications
+  produce no response, invalid request -32600 (non-object, missing
+  method, batch arrays), params validation -32602, internal failure
+  -32603 with the FIXED generic message — no traceback, type name,
+  environment value, credential, or internal path ever leaks.
+- Decision equivalence with the CLI: identical payload fields for
+  success, refusal, invalid mode (rejected before initialization on both
+  interfaces), invalid command (rejected before execution), and malformed
+  input (never executes). Same validated ExecutionRequest, same
+  RuntimeSession.execute() outcome.
+- Audit correlation (ADR-012): initialize + execute events
+  (session_created, init_decision, execution_request, execution_result)
+  share one session id; a refused session records execution_refused;
+  recorder failure is observational (never an execution fallback).
+- Structural guard (AST): mcp.py contains no subprocess/os.system/
+  os.popen/os.execve reference and no run_in_sandbox/command_workload
+  call — the only workload path is session.execute().
+
+NATIVE VERIFIED: host-side protocol/validation/equivalence logic and
+fail-closed paths; the real sandbox-internal MCP path remains NOT
+VERIFIED NATIVE (recorded AppArmor/setgroups substrate reason, unchanged).
+
+KNOWN LIMITATION (unchanged): HARDENED end-to-end and native rootless
+sandbox-internal execution remain NOT VERIFIED on current substrates;
+the API interface (ADR-013 Phase 12) is not yet implemented.

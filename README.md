@@ -18,18 +18,22 @@ audited.
 | Architecture + threat model (Phase 0) | **COMPLETE** — `ARCHITECTURE.md`, `THREAT_MODEL.md`, `SECURITY_SPEC.md`, `ADRs/` |
 | Seccomp syscall allowlist derivation (Phase 1 pre-task) | **COMPLETE, container-validated** — 45-syscall HARDENED allowlist, behaviorally verified |
 | Runtime implementation (Phase 1) | **COMPLETE (Steps 1–16)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) + `/proc` isolation (`hidepid=2`), minimal `/dev` (six identity-verified bind-mounted nodes, ADR-015), `/sys` absence (Step 4) + network namespace deny-by-construction (only `lo` DOWN, no addresses/routes, no usable path — Step 5) + no_new_privs (Step 6) + full capability reduction (Step 7) + seccomp filter installation (Step 8) + rlimits (Step 9) + cgroup v2 enforcement module (Step 10) + environment sanitization (Step 11, the approved six-variable sandbox environment — host env never inherited, S-034) + credential/socket isolation (Step 12 — host credential/control-socket paths absent, socket env vars never survive, socket creation denied by the filter, S-003/S-004) + bounded stdout/stderr (Step 13 — S-037 bounded supervisor pipe, terminate + truncation notice, workload cannot bypass) + external timeout enforcement (Step 14 — S-036 supervisor wall-clock deadline, session termination, workload cannot disable/evade/reset) + process-tree containment and cleanup (Step 15 — S-014 child subreaper + namespace-init kill + cgroup.kill where delegated + mandatory S-038 absence verification, survivors never reported as success) + minimal successful workload demonstration (Step 16 — item 22: a workload executes end-to-end through the complete boundary, returning deterministic output and observing the invariants from inside) implemented and tested; the full mandated Phase 1 order (items 1–22) is complete |
-| Interfaces (CLI/MCP) | **IN PROGRESS (sub-phase A complete)** — the thin CLI front-end (ADR-013): `RuntimeSession.execute(ExecutionRequest)` is the SOLE execution path (`execute() -> run_in_sandbox()`); the CLI is argv-only (no shell strings, `--` separator), `--json` exposes mode + session identity, deterministic exit codes (0/1-255 workload, 2 usage, 3 init refused, 4 execution refused); the execve bridge runs the command INSIDE the sandbox (workspace-provided binaries; the minimal rootfs has no system binaries — unavailable commands fail deterministically, never on the host); minimal host-side JSONL audit recorder (ADR-012, observational, open-per-record so no audit fd crosses the fork boundary); MCP (sub-phase B) not yet started |
+| Interfaces (CLI/MCP) | **COMPLETE (sub-phases A + B)** — the thin CLI front-end and the thin MCP stdio JSON-RPC 2.0 front-end (ADR-013), both over the SOLE execution path `RuntimeSession.execute(ExecutionRequest) -> run_in_sandbox()`; the CLI is argv-only (no shell strings, `--` separator), `--json` exposes mode + session identity, deterministic exit codes (0/1-255 workload, 2 usage, 3 init refused, 4 execution refused); the MCP server (`python -m agent_sandbox.mcp`) implements the minimum protocol surface (`initialize` + `execute`, id preservation, notifications, deterministic -32700/-32600/-32601/-32602/-32603 errors, no host details leak); the execve bridge runs the command INSIDE the sandbox (workspace-provided binaries; the minimal rootfs has no system binaries — unavailable commands fail deterministically, never on the host); decision-equivalence with the CLI is tested (same ExecutionRequest, same payload fields, mode + session identity); minimal host-side JSONL audit recorder (ADR-012, observational, open-per-record so no audit fd crosses the fork boundary) |
 
-This repository currently contains the security design, the reproducible
-seccomp derivation tooling, and the first Phase 1 runtime mechanisms
-(Steps 1-10: skeleton, namespace isolation, filesystem boundary,
-`/proc`+`/dev`+`/sys` boundary, network deny-by-construction, no_new_privs,
-capability reduction, seccomp installation, rlimits, cgroup v2). **There
-is still no runnable sandbox**; HARDENED initialization refuses at the
-first mechanism that is not yet implemented (currently `execution`),
-and refuses AT `resources` with the precise detected reason on hosts
-without cgroup v2 delegation (ADR-007), so nothing here should be used
-to sandbox a workload.
+This repository contains the security design, the reproducible seccomp
+derivation tooling, and the complete Phase 1 runtime (Steps 1-16: skeleton,
+namespace isolation, filesystem boundary, `/proc`+`/dev`+`/sys` boundary,
+network deny-by-construction, no_new_privs, capability reduction, seccomp
+installation, rlimits, cgroup v2, environment sanitization,
+credential/socket isolation, bounded output, external timeout, process-tree
+containment + cleanup verification, and the minimal successful workload
+demonstration) plus the thin CLI/MCP front-ends. On a capable substrate
+(Docker uid 1001) the isolated modes initialize to READY and a
+workspace-provided command executes end-to-end through the boundary via
+`python -m agent_sandbox` (CLI) or `python -m agent_sandbox.mcp` (stdio
+JSON-RPC). HARDENED still refuses AT `resources` with the precise
+detected reason on hosts without cgroup v2 delegation (ADR-007), so
+nothing should be used to sandbox a workload on such a host.
 Native Linux validation runs in CI and is authoritative over the
 Docker-based results (see `docs/seccomp-derivation/verification.md` for
 the exact labeling).
@@ -110,10 +114,12 @@ verifies both halves: legitimate workloads pass, and
   NOT VERIFIED on every current substrate; environment sanitization
   (Step 11), credential/socket isolation (Step 12), bounded output
   (Step 13), external timeout (Step 14) and process-tree containment +
-  cleanup verification (Step 15) complete the mechanism chain - the
+  cleanup verification  (Step 15) complete the mechanism chain - the
   EXECUTION stage registers and the isolated modes initialize to READY
-  on a capable substrate; CLI/MCP integration remains a later phase.
-  RESTRICTED (rlimits only, ADR-007) completes `resources` and
+  on a capable substrate; the CLI (`python -m agent_sandbox`) and MCP
+  (`python -m agent_sandbox.mcp`) thin front-ends (ADR-013, sub-phases
+  A + B) are the only ways to reach the boundary and carry no security
+  policy. RESTRICTED (rlimits only, ADR-007) completes `resources` and
   advances.
 
 ## Validation labeling
