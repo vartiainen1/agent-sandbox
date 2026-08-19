@@ -504,28 +504,36 @@ class StructuralGuardTests(unittest.TestCase):
     def test_mcp_module_has_no_execution_primitives(self):
         # S-016/S-017 + ADR-013: the MCP front-end must never invoke a
         # host-side execution primitive and must not touch the boundary
-        # directly - the ONLY workload path is session.execute().
+        # directly - the ONLY workload path is session.execute(), and it
+        # lives in the SHARED core (agent_sandbox.interface) used by both
+        # the MCP and API transports.
         import ast
         import inspect
-        tree = ast.parse(inspect.getsource(mcp_mod))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id == "subprocess":
-                self.fail("mcp.py must not reference subprocess")
-            if isinstance(node, ast.Attribute):
-                if (isinstance(node.value, ast.Name)
-                        and node.value.id == "os"
-                        and node.attr in ("system", "popen", "execve",
-                                          "spawnv", "execl",
-                                          "posix_spawn")):
-                    self.fail(f"mcp.py must not use os.{node.attr}")
-                if node.attr == "run_in_sandbox":
-                    self.fail("mcp.py must not call run_in_sandbox directly")
-                if node.attr == "command_workload":
-                    self.fail("mcp.py must not build a workload function")
-        src = inspect.getsource(mcp_mod)
-        self.assertNotIn("import subprocess", src)
-        self.assertNotIn("from agent_sandbox.execution", src)
-        self.assertIn("session.execute", src)
+        from agent_sandbox import interface as iface_mod
+        for mod in (mcp_mod, iface_mod):
+            tree = ast.parse(inspect.getsource(mod))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and node.id == "subprocess":
+                    self.fail(f"{mod.__name__} must not reference subprocess")
+                if isinstance(node, ast.Attribute):
+                    if (isinstance(node.value, ast.Name)
+                            and node.value.id == "os"
+                            and node.attr in ("system", "popen", "execve",
+                                              "spawnv", "execl",
+                                              "posix_spawn")):
+                        self.fail(f"{mod.__name__} must not use "
+                                  f"os.{node.attr}")
+                    if node.attr == "run_in_sandbox":
+                        self.fail(f"{mod.__name__} must not call "
+                                  "run_in_sandbox directly")
+                    if node.attr == "command_workload":
+                        self.fail(f"{mod.__name__} must not build a "
+                                  "workload function")
+            src = inspect.getsource(mod)
+            self.assertNotIn("import subprocess", src)
+            self.assertNotIn("from agent_sandbox.execution", src)
+        # The shared core is where the sole boundary call lives.
+        self.assertIn("session.execute", inspect.getsource(iface_mod))
 
     def test_execution_only_through_session_execute(self):
         # Functional: every code path that could reach a workload funnels

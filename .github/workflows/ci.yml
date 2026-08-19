@@ -84,6 +84,9 @@ jobs:
       - name: MCP interface tests (stdio JSON-RPC 2.0, decision equivalence, no-leak, fail-closed, no-shell guard - authoritative)
         run: python -m unittest tests.unit.test_mcp -v
 
+      - name: API interface tests (stdlib HTTP, three-way decision equivalence, no-leak, fail-closed, no-shell guard - authoritative)
+        run: python -m unittest tests.unit.test_api -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 
