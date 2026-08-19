@@ -34,11 +34,13 @@ class _SyscallTable:
     X86_64 = {
         "getpid": 39, "getuid": 102, "getgid": 104,
         "unshare": 272, "mount": 165, "umount2": 166,
+        "pivot_root": 155,
     }
     # aarch64
     AARCH64 = {
         "getpid": 172, "getuid": 174, "getgid": 175,
         "unshare": 97, "mount": 40, "umount2": 39,
+        "pivot_root": 41,
     }
 
 
@@ -119,6 +121,14 @@ def getgid() -> int:
 # Namespace / mount operations
 # ---------------------------------------------------------------------------
 
+# mount(2) flags (kernel ABI)
+MS_BIND = 0x1000
+MS_REC = 0x4000
+MS_PRIVATE = 0x40000
+# umount2(2) flags
+MNT_DETACH = 0x2
+
+
 def unshare(flags: int) -> None:
     """unshare(2). Raises OSError with the real errno on failure."""
     _check(_raw(_number("unshare"), flags), "unshare")
@@ -137,3 +147,14 @@ def mount(source: bytes, target: bytes, fstype: bytes, flags: int,
 def umount2(target: bytes, flags: int = 0) -> None:
     """umount2(2). Unmount inside the sandbox's mount namespace."""
     _check(_raw(_number("umount2"), ctypes.c_char_p(target), flags), "umount2")
+
+
+def pivot_root(new_root: bytes, put_old: bytes) -> None:
+    """pivot_root(2): move the caller's root to ``new_root`` and stack the
+    old root at ``put_old`` (both must be mount points). The classic
+    rootless pattern calls it as pivot_root(".", ".") after chdir'ing into
+    the bind-mounted new root, then detaches the old root with
+    umount2(MNT_DETACH). Raises OSError (fail closed) on any failure."""
+    _check(_raw(_number("pivot_root"),
+                ctypes.c_char_p(new_root), ctypes.c_char_p(put_old)),
+           "pivot_root")

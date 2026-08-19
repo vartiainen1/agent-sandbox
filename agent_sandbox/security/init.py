@@ -18,8 +18,8 @@ Rules enforced here:
   refusal is reported (stable, reproducible reasons).
 - Stage guards REGISTER as the mechanisms are implemented (Phase 1 steps
   2+). An unregistered stage that a mode requires => STAGE_UNAVAILABLE
-  refusal. In Step 2 the NAMESPACES guard is registered (isolation/setup,
-  imported lazily by this module); stages 3+ are not, so HARDENED and
+  refusal. Steps 2-3 register NAMESPACES and FILESYSTEM (isolation/setup,
+  imported lazily by this module); later stages are not, so HARDENED and
   RESTRICTED initialize only as far as the mechanisms that exist and
   refuse at the first missing one. COMPATIBILITY (no isolation claims)
   initializes with the structural stages only.
