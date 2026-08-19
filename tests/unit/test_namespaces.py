@@ -395,10 +395,11 @@ class ProbeIntegrationTests(unittest.TestCase):
     def test_namespace_probe_ok_and_hardened_refuses_at_resources(self):
         # The real probes establish the full namespace boundary AND the
         # filesystem boundary (real rootfs + pivot_root, built from a real
-        # workspace); HARDENED then refuses AT RESOURCES (the cgroup v2
-        # half of the stage is Step 10, ADR-007) - the fail-closed chain
-        # works end to end. Skipped (with reason) on a substrate that
-        # cannot provide the mapping.
+        # workspace); HARDENED then refuses AT RESOURCES because cgroup v2
+        # delegation is unavailable on this substrate (Docker rootless:
+        # cgroupfs read-only) - the fail-closed chain works end to end.
+        # Skipped (with reason) on a substrate that cannot provide the
+        # mapping.
         _require_rootless(self)
         check = setup.namespace_probe()
         self.assertTrue(check.ok, check.reason)
@@ -408,7 +409,8 @@ class ProbeIntegrationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
-        self.assertIn("cgroup v2", result.failure.reason)
+        self.assertIn("cgroup", result.failure.reason)
+        self.assertIn("fail closed", result.failure.reason)
 
     @skip_unless_linux
     def test_combined_run_verifies_all_namespaces_in_one_child(self):

@@ -63,10 +63,20 @@ Step 9 (rlimits, S-012/S-027, ADR-007): PID 1 then lowers the six
 mandated rlimits (RLIMIT_CPU/AS/NPROC/NOFILE/FSIZE/CORE=0, soft ==
 hard) and verifies the kernel-state read-back. Established AFTER the
 seccomp install (prlimit64 is in the derived allowlist - no filter
-change) and BEFORE the workload fn (resources.py). The RESOURCES stage
-is the last mandatory stage implemented so far: HARDENED still refuses
-AT RESOURCES (the cgroup v2 half is Step 10), while RESTRICTED
-completes its RESOURCES stage with rlimits only (ADR-007).
+change) and BEFORE the workload fn (resources.py).
+
+Step 10 (cgroup v2, ADR-007 READING A, S-012/S-027/S-014): for HARDENED,
+the supervisor prepares the session cgroup HOST-SIDE in the delegated
+subtree before entering the boundary - cgroup v2 identity, the four
+required controllers (pids/memory/cpu/io), writable-subtree probe,
+session creation, io.max backing-device resolution (kernel state, never
+guessed), all four limits written + read-back verified - and PID 1 then
+joins it AFTER the rlimits (cgroup.procs migration + membership + limit
+re-verification). Delegation unavailable, a missing controller, an
+unresolvable io device, or any establishment/verification failure makes
+HARDENED REFUSE AT RESOURCES with the precise reason - never a partial
+success (RESTRICTED completes its RESOURCES stage with rlimits only,
+ADR-007, and advances to ENVIRONMENT).
 
 PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
 1 can mount a procfs showing the sandbox's own processes) and runs the
@@ -88,6 +98,7 @@ import sys
 from dataclasses import dataclass
 
 from agent_sandbox.config import ResourceLimits
+from agent_sandbox.isolation import cgroups as cgroups_mod
 from agent_sandbox.isolation import filesystem as fs_mod
 from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, resources as resources_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
@@ -136,7 +147,8 @@ def enter_all_namespaces() -> NamespaceState:
 
 
 def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
-                   limits: ResourceLimits | None = None) -> SandboxRun:
+                   limits: ResourceLimits | None = None,
+                   cgroup_session=None) -> SandboxRun:
     """Run ``fn`` inside the full sandbox boundary.
 
     Namespaces only (Step 2): ``fn(state)`` - state is the verified
@@ -148,6 +160,10 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     With ``limits`` (Step 9): PID 1 lowers + verifies the six mandated
     rlimits AFTER the seccomp install and BEFORE the workload fn
     (prlimit64 is allowlisted - no filter change needed).
+    With ``cgroup_session`` (Step 10, HARDENED): a session cgroup prepared
+    host-side by the supervisor in the delegated subtree; PID 1 migrates
+    itself into it (cgroup.procs) after the rlimits and verifies
+    membership + all four limit read-backs BEFORE the workload fn.
 
     The supervisor stays outside; the kernel enforces the boundary for
     fn's whole process tree. Any boundary failure aborts BEFORE fn runs
@@ -203,6 +219,8 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 seccomp_mod.establish_and_verify(program)
                 if limits is not None:
                     resources_mod.establish_and_verify_rlimits(limits)
+                if cgroup_session is not None:
+                    cgroups_mod.join_and_verify(cgroup_session, os.getpid())
             except BaseException as e:  # noqa: BLE001
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
@@ -640,18 +658,21 @@ def _seccomp_guard(config) -> StageCheck:
 
 
 def resources_probe(config) -> StageCheck:
-    """Real-path probe of the RESOURCES mechanism (the six mandated
+    """Real-path probe of the RESOURCES mechanism: the six mandated
     rlimits lowered + kernel-state read-back verified in PID 1 after
-    no_new_privs + capability reduction + seccomp install), run in a
-    forked child so the supervisor never enters the boundary.
+    no_new_privs + capability reduction + seccomp install, and (HARDENED)
+    the cgroup v2 session - prepared host-side in the delegated subtree
+    (v2 identity, four required controllers, writable-subtree probe,
+    session cgroup creation, controller enablement, io.max device
+    resolution, all four limits written + read-back) and joined by PID 1
+    (cgroup.procs migration + membership + limit re-verification).
 
-    RESOURCES-stage shape (ADR-007): rlimits are the always-applied half
-    of the RESOURCES stage. HARDENED additionally mandates cgroup v2
-    delegation (Step 10) - until that half is implemented, the probe
-    establishes the rlimits (proving the mechanism works) and then
-    refuses AT RESOURCES, so the refusal point does not advance beyond
-    RESOURCES while the stage is incomplete. RESTRICTED (rlimits only,
-    ADR-007) completes its RESOURCES stage here."""
+    RESOURCES-stage shape (ADR-007, READING A): all four controllers are
+    mandatory for HARDENED. When delegation is unavailable (read-only
+    cgroupfs, not delegated, missing controller, unresolvable io device,
+    or any establishment/verification failure), HARDENED refuses AT
+    RESOURCES with the precise detected reason - never a partial success.
+    RESTRICTED (rlimits only, ADR-007) completes its RESOURCES stage here."""
     return _resources_probe_impl(config)
 
 
@@ -665,8 +686,19 @@ def _resources_probe_impl(config) -> StageCheck:
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
+        session = None
         try:
             program = seccomp_mod.build_program()
+            # HARDENED: prepare the cgroup session HOST-SIDE in the
+            # delegated subtree (before entering the boundary) - detect
+            # v2, require the four controllers, probe/establish the
+            # session cgroup, resolve the io device, write + read back
+            # all four limits. Any delegation/establishment failure is a
+            # refusal with the precise reason. RESTRICTED: no cgroup.
+            if config.mode is SecurityMode.HARDENED:
+                session = cgroups_mod.prepare_session(
+                    cgroups_mod.CGROUP_ROOT, f"sbx-{os.getpid()}",
+                    config.resources, config.workspace)
             state = enter_all_namespaces()
         except BaseException as e:  # noqa: BLE001
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
@@ -674,28 +706,23 @@ def _resources_probe_impl(config) -> StageCheck:
         grand = os.fork()
         if grand == 0:
             # PID 1: no_new_privs -> capability reduction -> seccomp
-            # install -> rlimits lower + read-back; then the verdict
-            # depends on the mode (ADR-007): HARDENED refuses AT RESOURCES
-            # (cgroup v2 half is Step 10), RESTRICTED is complete with
-            # rlimits only. Report the verdict (the only verdict writer).
+            # install -> rlimits lower + read-back -> (HARDENED) join the
+            # session cgroup (migrate self + verify membership + limit
+            # read-backs). RESTRICTED is complete with rlimits only.
             try:
                 priv_mod.establish_and_verify()
                 priv_mod.reduce_and_verify()
                 seccomp_mod.establish_and_verify(program)
                 resources_mod.establish_and_verify_rlimits(config.resources)
-                if config.mode is SecurityMode.HARDENED:
-                    os.write(write_fd, b"FAIL cgroup v2 (the HARDENED-"
-                                      b"mandatory half of the RESOURCES "
-                                      b"stage, ADR-007) is not yet "
-                                      b"implemented (Step 15 of the mandated "
-                                      b"order) - RESOURCES incomplete, fail "
-                                      b"closed, workload not executed")
-                else:
-                    os.write(write_fd, b"OK")
+                if session is not None:
+                    cgroups_mod.join_and_verify(session, os.getpid())
+                os.write(write_fd, b"OK")
             except BaseException as e:  # noqa: BLE001
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
             os._exit(0)
         _, status = os.waitpid(grand, 0)
+        if session is not None:
+            cgroups_mod.remove_session(session)
         os._exit(0 if os.waitstatus_to_exitcode(status) == 0 else 1)
     os.close(write_fd)
     data = b""
@@ -707,6 +734,17 @@ def _resources_probe_impl(config) -> StageCheck:
     _, status = os.waitpid(pid, 0)
     msg = data.decode(errors="replace").strip()
     if msg == "OK":
+        if config.mode is SecurityMode.HARDENED:
+            return StageCheck(
+                ok=True,
+                reason="rlimits established and kernel-state read-back "
+                       "verified (RLIMIT_CPU/AS/NPROC/NOFILE/FSIZE/CORE=0, "
+                       "soft == hard) after the seccomp install in PID 1 of "
+                       "a real forked child; HARDENED cgroup v2 session "
+                       "established in the delegated subtree (pids/memory/"
+                       "cpu/io.max all written and read back) and PID 1 "
+                       "migrated + membership/limit re-verified (RESOURCES "
+                       "complete, READING A)")
         return StageCheck(
             ok=True,
             reason="rlimits established and kernel-state read-back verified "
@@ -722,10 +760,11 @@ def _resources_probe_impl(config) -> StageCheck:
 
 def _resources_guard(config) -> StageCheck:
     """RESOURCES stage guard (registered below). Probes the real rlimit
-    path (and the HARDENED cgroup-v2 requirement); HARDENED/RESTRICTED
-    refuse unless the mechanism is established and verified, and HARDENED
-    additionally refuses while the cgroup half of the stage is
-    unimplemented (the refusal point stays AT RESOURCES)."""
+    path and (HARDENED) the cgroup v2 session; HARDENED/RESTRICTED refuse
+    unless the mechanism is established and verified, and HARDENED
+    refuses whenever cgroup delegation/establishment is unavailable or
+    unverifiable (the refusal point stays AT RESOURCES until all four
+    controllers are established)."""
     return resources_probe(config)
 
 

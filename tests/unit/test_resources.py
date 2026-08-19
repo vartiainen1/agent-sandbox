@@ -270,11 +270,14 @@ class ResourceProbeTests(unittest.TestCase):
                       setup._resources_guard)
 
     @skip_unless_linux
-    def test_hardened_resources_probe_refuses_at_resources(self):
-        # The probe establishes the rlimits (mechanism works) and then
-        # REFUSES HARDENED AT RESOURCES: the cgroup v2 half of the stage
-        # (Step 10) is not implemented - the refusal point must not
-        # advance beyond RESOURCES while the stage is incomplete.
+    def test_hardened_resources_probe_blocks_without_delegation(self):
+        # The probe establishes the rlimits and then attempts the cgroup
+        # v2 session for HARDENED. On this substrate delegation is
+        # unavailable (Docker rootless: cgroupfs read-only), so the probe
+        # REFUSES AT RESOURCES with the precise detected reason - never a
+        # partial success, never a silent downgrade to rlimits-only. On a
+        # delegation-capable host the probe passes (privileged-substrate
+        # tests in test_cgroups.py).
         _require_ns(self)
         src = tempfile.mkdtemp(prefix="as-rs-ws-")
         self.addCleanup(shutil.rmtree, src, True)
@@ -282,9 +285,9 @@ class ResourceProbeTests(unittest.TestCase):
         check = setup._resources_probe_impl(cfg)
         self.assertFalse(check.ok)
         self.assertEqual(check.code, InitFailureCode.STAGE_FAILED)
-        self.assertIn("cgroup v2", check.reason)
-        self.assertIn("RESOURCES incomplete", check.reason)
+        self.assertIn("cgroup", check.reason)
         self.assertIn("fail closed", check.reason)
+        self.assertNotIn("OK", check.reason)
 
     @skip_unless_linux
     def test_restricted_resources_probe_ok(self):
@@ -423,11 +426,15 @@ class ResourceIntegrationTests(unittest.TestCase):
     """Full real chain through the fail-closed initializer."""
 
     @skip_unless_linux
-    def test_hardened_real_chain_refuses_at_resources_cgroup_half(self):
-        # Full real path: all mechanism probes through RESOURCES pass
+    def test_hardened_real_chain_blocks_at_resources_without_delegation(self):
+        # Full real path: all mechanism probes through RESOURCES run
         # (namespaces, filesystem, network, privileges, seccomp, rlimits);
-        # HARDENED then refuses AT RESOURCES because the cgroup v2 half of
-        # the stage is Step 10 - the refusal point stays at RESOURCES.
+        # HARDENED then refuses AT RESOURCES because cgroup v2 delegation
+        # is unavailable on this substrate (Docker rootless: cgroupfs
+        # read-only) - the refusal point stays at RESOURCES, fail closed.
+        # On a delegation-capable host the chain would advance to
+        # ENVIRONMENT (asserted by the privileged-substrate tests in
+        # test_cgroups.py).
         _require_fs(self)
         src = tempfile.mkdtemp(prefix="as-rs-int-")
         self.addCleanup(shutil.rmtree, src, True)
@@ -439,8 +446,8 @@ class ResourceIntegrationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
-        self.assertIn("cgroup v2", result.failure.reason)
-        self.assertIn("RESOURCES incomplete", result.failure.reason)
+        self.assertIn("cgroup", result.failure.reason)
+        self.assertIn("fail closed", result.failure.reason)
 
     @skip_unless_linux
     def test_restricted_real_chain_advances_to_environment(self):

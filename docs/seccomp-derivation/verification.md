@@ -640,3 +640,88 @@ the logic is tested identically everywhere.
   lands; RLIMIT_AS is per-process (total-tree memory needs the cgroup
   memory.max); RLIMIT_FSIZE bounds single files (total disk needs
   io.max + workspace pre-check) — both documented gaps per ADR-007.
+
+## Phase 1 Step 10 — cgroup v2 enforcement results (2026-08-19)
+
+### Policy (READING A — approved policy definition, ADR-007)
+
+The four architecture-named controllers on the session subtree (a child
+the supervisor creates in the delegated subtree):
+
+| Controller | Exact value | Source |
+|---|---|---|
+| `pids.max` | `ResourceLimits.processes` (default 256) | config |
+| `memory.max` | `ResourceLimits.memory_mb * 1024 * 1024` (default 4096 MiB) | config |
+| `cpu.max` | `"{cpu_quota_percent * 1000} 100000"` — period fixed 100000 µs; 100% = 100000/100000 (one full core) | `cpu_quota_percent` (default 100) |
+| `io.max` | `"{major}:{minor} rbps={io_mbps*1024*1024} wbps={io_mbps*1024*1024}"` on the kernel-resolved backing device of the workspace/rootfs | `io_mbps` (default 1024) |
+
+HARDENED requires ALL FOUR controllers: no partial success — any
+controller unavailable, not delegated, unwritable, unconfigureable, or
+unverifiable → STAGE_FAILED → explicit reason → workload not executed →
+refused AT RESOURCES. RESTRICTED retains rlimits-only (ADR-007), no
+cgroup requirement. The io device is resolved from kernel state
+(`/proc/self/mountinfo` + `/sys/dev/block`), never a guessed major:minor;
+if the device cannot be resolved, HARDENED refuses. `memory.swap.max` is
+not required (not in the architecture).
+
+### Mechanism (isolation/cgroups.py)
+
+- cgroup v2 filesystem identity verification (cgroup.controllers present,
+  cgroup2 fstype in mountinfo)
+- required-controller discovery (pids, memory, cpu, io)
+- delegation/writability probe: create + remove a child cgroup in the
+  caller's cgroup — the mkdir/rmdir test is the delegation signal, never
+  "the probe file exists"; precise BLOCKED reason (read-only / not
+  delegated / controller-unavailable) returned on failure
+- session cgroup creation; enable the four controllers in subtree_control
+  (atomic four-controller requirement)
+- limit writes; migrate sandbox PID 1 via cgroup.procs
+- read every configured limit back from kernel state (never a successful
+  write as evidence); verify PID 1 membership; verify workload
+  inheritance across fork/exec
+- deterministic NamespaceSetupError on every unexpected state; Windows
+  import-safe (all filesystem ops behind seams)
+
+### Ordering
+
+proc → network → no_new_privs → capability reduction → seccomp → rlimits
+→ cgroup enforcement → workload. Seccomp untouched; cgroup setup uses
+only already-allowlisted operations (open/write/read/close on the
+delegated cgroupfs — no syscall expansion; gate still 45).
+
+### Substrate evidence (labels kept strictly separate)
+
+- **DOCKER ROOTLESS BLOCKED (uid 1001)**: cgroupfs is mounted
+  READ-ONLY (cgroup2 ro,nosuid,nodev,noexec) — mkdir fails with
+  "Read-only file system". The delegation probe returns the precise
+  reason `cgroup v2 delegation unavailable: read-only filesystem
+  (no writable delegated subtree)`, HARDENED refuses with the workload
+  marker absent. This is the fail-closed path — NOT an enforcement PASS.
+- **PRIVILEGED SUBSTRATE VERIFIED (WSL2 root container)**: delegation
+  probe writable (mkdir/rmdir OK — the earlier false negative from the
+  cgroup.type EINVAL write was fixed: that write is value semantics, not
+  a delegation signal); io device resolved from kernel state (7,3);
+  HARDENED then refuses with the precise controller-availability reason
+  because WSL2 cannot enable `memory`/`io` at the root — even with
+  pids/cpu individually enableable, the atomic four-controller
+  requirement refuses, exactly READING A. Mechanism behavior proven;
+  full enforcement NOT achieved on this substrate either.
+- **NATIVE GITHUB RUNNER**: delegation detection/fail-closed path runs;
+  no writable delegated subtree for uid 1001 (cgroupfs root-owned) →
+  **NATIVE ROOTLESS ENFORCEMENT NOT VERIFIED** — never relabeled PASS.
+
+### Step 10 labels
+
+- **POLICY VERIFIED**: cpu.max / io.max formatting + exact mapping +
+  validation, host-side (254-test Windows suite green).
+- **ROOTLESS DELEGATION BLOCKED**: Docker rootless read-only cgroupfs —
+  fail-closed refusal with precise reason (workload marker absent).
+- **PRIVILEGED SUBSTRATE VERIFIED**: delegation probe + device
+  resolution on the privileged container; controller-enablement refusal
+  per READING A. Proves mechanism behavior only — NOT rootless proof.
+- **NATIVE ROOTLESS NOT VERIFIED**: recorded reason (no delegated
+  subtree on the runner); native skips never converted to PASS.
+- **KNOWN LIMITATION**: genuine rootless HARDENED cgroup enforcement
+  remains unverified until a systemd `Delegate=yes` (or equivalent)
+  writable delegated subtree exists; io.max requires a resolvable
+  backing device in the enforcement substrate.

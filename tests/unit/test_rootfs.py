@@ -440,9 +440,10 @@ class GuardAndIntegrationTests(unittest.TestCase):
     def test_hardened_init_refuses_at_resources(self):
         # Full real path: namespaces + rootfs + pivot_root + network +
         # no_new_privs + capability reduction + seccomp + rlimits boundary
-        # verified, then HARDENED refuses AT RESOURCES (the cgroup v2 half
-        # of the stage is Step 10, ADR-007) - the refusal point stays at
-        # RESOURCES while the stage is incomplete.
+        # verified, then HARDENED refuses AT RESOURCES because cgroup v2
+        # delegation is unavailable on this substrate (Docker rootless:
+        # cgroupfs read-only) - the refusal point stays at RESOURCES,
+        # fail closed.
         _require_fs(self)
         src = make_source()
         self.addCleanup(shutil.rmtree, src, True)
@@ -452,7 +453,8 @@ class GuardAndIntegrationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
-        self.assertIn("cgroup v2", result.failure.reason)
+        self.assertIn("cgroup", result.failure.reason)
+        self.assertIn("fail closed", result.failure.reason)
 
 
 if __name__ == "__main__":

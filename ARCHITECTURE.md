@@ -307,6 +307,15 @@ Two layers, both enforced outside the workload and neither raisable by it
    - `cpu.max` — CPU quota
    - `io.max` — disk throughput
 
+   Exact values are configuration-defined (Phase 1 Step 10, ADR-007
+   READING A): `pids.max` = `processes`, `memory.max` = `memory_mb`
+   bytes, `cpu.max` = `"{cpu_quota_percent * 1000} 100000"` (fixed
+   100000 µs period), `io.max` = `io_mbps` MiB/s on the kernel-resolved
+   workspace backing block device. HARDENED requires ALL FOUR
+   controllers established and verified — no partial success; a missing
+   controller, un-delegated subtree, or unresolvable io device is a
+   refusal with the precise reason.
+
 - **HARDENED requires cgroup v2 delegation** for memory/pids/io. If the
   host does not delegate cgroups, HARDENED execution is **refused** with the
   specific reason (S-018); the user may explicitly select RESTRICTED, which
