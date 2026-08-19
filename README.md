@@ -54,7 +54,7 @@ the exact labeling).
   host-side, session-correlated.
 
 The AI agent is **not** part of the security boundary. MCP and the API
-(not yet implemented) are interfaces, never the boundary.
+are interfaces, never the boundary.
 
 ## Documents
 
