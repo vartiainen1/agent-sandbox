@@ -1,0 +1,18 @@
+# Specs handed to the project - source of truth stays out of the repo
+dont touch/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
