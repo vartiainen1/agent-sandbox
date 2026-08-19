@@ -59,6 +59,15 @@ Seccomp_filters=1) plus a forbidden-syscall (socket -> EPERM) spot
 check (seccomp.py). Install failure, verification failure, or an
 unexpected state refuses before the workload runs.
 
+Step 9 (rlimits, S-012/S-027, ADR-007): PID 1 then lowers the six
+mandated rlimits (RLIMIT_CPU/AS/NPROC/NOFILE/FSIZE/CORE=0, soft ==
+hard) and verifies the kernel-state read-back. Established AFTER the
+seccomp install (prlimit64 is in the derived allowlist - no filter
+change) and BEFORE the workload fn (resources.py). The RESOURCES stage
+is the last mandatory stage implemented so far: HARDENED still refuses
+AT RESOURCES (the cgroup v2 half is Step 10), while RESTRICTED
+completes its RESOURCES stage with rlimits only (ADR-007).
+
 PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
 1 can mount a procfs showing the sandbox's own processes) and runs the
 workload inside the new root; a failed or unverifiable boundary aborts
@@ -78,10 +87,11 @@ import shutil
 import sys
 from dataclasses import dataclass
 
+from agent_sandbox.config import ResourceLimits
 from agent_sandbox.isolation import filesystem as fs_mod
-from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
+from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, resources as resources_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
-from agent_sandbox.models import InitFailureCode, InitStage, StageCheck
+from agent_sandbox.models import InitFailureCode, InitStage, SecurityMode, StageCheck
 
 # The enforcement core (agent_sandbox.security.init) is referenced by module
 # (never imported names) so tests can patch its single platform seam
@@ -125,7 +135,8 @@ def enter_all_namespaces() -> NamespaceState:
     return NamespaceState(userns=state, host_ns=host_ns, sandbox_ns=sandbox_ns)
 
 
-def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
+def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
+                   limits: ResourceLimits | None = None) -> SandboxRun:
     """Run ``fn`` inside the full sandbox boundary.
 
     Namespaces only (Step 2): ``fn(state)`` - state is the verified
@@ -134,6 +145,9 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
     (private propagation, bind rootfs, tmpfs /tmp, pivot_root, old-root
     detach, verification) and ``fn(state, fs)`` is called with the
     verified FilesystemState. fn may return a str, captured as ``output``.
+    With ``limits`` (Step 9): PID 1 lowers + verifies the six mandated
+    rlimits AFTER the seccomp install and BEFORE the workload fn
+    (prlimit64 is allowlisted - no filter change needed).
 
     The supervisor stays outside; the kernel enforces the boundary for
     fn's whole process tree. Any boundary failure aborts BEFORE fn runs
@@ -187,6 +201,8 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
                 priv_mod.establish_and_verify()
                 priv_mod.reduce_and_verify()
                 seccomp_mod.establish_and_verify(program)
+                if limits is not None:
+                    resources_mod.establish_and_verify_rlimits(limits)
             except BaseException as e:  # noqa: BLE001
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
@@ -623,6 +639,96 @@ def _seccomp_guard(config) -> StageCheck:
     return seccomp_probe(config)
 
 
+def resources_probe(config) -> StageCheck:
+    """Real-path probe of the RESOURCES mechanism (the six mandated
+    rlimits lowered + kernel-state read-back verified in PID 1 after
+    no_new_privs + capability reduction + seccomp install), run in a
+    forked child so the supervisor never enters the boundary.
+
+    RESOURCES-stage shape (ADR-007): rlimits are the always-applied half
+    of the RESOURCES stage. HARDENED additionally mandates cgroup v2
+    delegation (Step 10) - until that half is implemented, the probe
+    establishes the rlimits (proving the mechanism works) and then
+    refuses AT RESOURCES, so the refusal point does not advance beyond
+    RESOURCES while the stage is incomplete. RESTRICTED (rlimits only,
+    ADR-007) completes its RESOURCES stage here."""
+    return _resources_probe_impl(config)
+
+
+def _resources_probe_impl(config) -> StageCheck:
+    if not _security_init._is_linux() or not hasattr(os, "fork"):
+        return StageCheck(
+            ok=False, code=InitFailureCode.PLATFORM_UNSUPPORTED,
+            reason="resources probe requires Linux with os.fork (fail "
+                   "closed - rlimits cannot be established here)")
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            program = seccomp_mod.build_program()
+            state = enter_all_namespaces()
+        except BaseException as e:  # noqa: BLE001
+            os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
+            os._exit(1)
+        grand = os.fork()
+        if grand == 0:
+            # PID 1: no_new_privs -> capability reduction -> seccomp
+            # install -> rlimits lower + read-back; then the verdict
+            # depends on the mode (ADR-007): HARDENED refuses AT RESOURCES
+            # (cgroup v2 half is Step 10), RESTRICTED is complete with
+            # rlimits only. Report the verdict (the only verdict writer).
+            try:
+                priv_mod.establish_and_verify()
+                priv_mod.reduce_and_verify()
+                seccomp_mod.establish_and_verify(program)
+                resources_mod.establish_and_verify_rlimits(config.resources)
+                if config.mode is SecurityMode.HARDENED:
+                    os.write(write_fd, b"FAIL cgroup v2 (the HARDENED-"
+                                      b"mandatory half of the RESOURCES "
+                                      b"stage, ADR-007) is not yet "
+                                      b"implemented (Step 15 of the mandated "
+                                      b"order) - RESOURCES incomplete, fail "
+                                      b"closed, workload not executed")
+                else:
+                    os.write(write_fd, b"OK")
+            except BaseException as e:  # noqa: BLE001
+                os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
+            os._exit(0)
+        _, status = os.waitpid(grand, 0)
+        os._exit(0 if os.waitstatus_to_exitcode(status) == 0 else 1)
+    os.close(write_fd)
+    data = b""
+    while True:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+    _, status = os.waitpid(pid, 0)
+    msg = data.decode(errors="replace").strip()
+    if msg == "OK":
+        return StageCheck(
+            ok=True,
+            reason="rlimits established and kernel-state read-back verified "
+                   "(RLIMIT_CPU/AS/NPROC/NOFILE/FSIZE/CORE=0, soft == hard) "
+                   "after the seccomp install in PID 1 of a real forked "
+                   "child; RESTRICTED resource stage complete (rlimits "
+                   "only, ADR-007)")
+    return StageCheck(
+        ok=False, code=InitFailureCode.STAGE_FAILED,
+        reason=msg or f"resources probe child failed (status {status}) - "
+                      "fail closed, workload not executed")
+
+
+def _resources_guard(config) -> StageCheck:
+    """RESOURCES stage guard (registered below). Probes the real rlimit
+    path (and the HARDENED cgroup-v2 requirement); HARDENED/RESTRICTED
+    refuse unless the mechanism is established and verified, and HARDENED
+    additionally refuses while the cgroup half of the stage is
+    unimplemented (the refusal point stays AT RESOURCES)."""
+    return resources_probe(config)
+
+
 # Register the guards with the enforcement core. This module is imported
 # lazily by SecurityInitializer (and directly by tests), so the registry
 # sees each mechanism exactly when it exists - never before.
@@ -631,3 +737,4 @@ _security_init.register_stage_guard(InitStage.FILESYSTEM, _filesystem_guard)
 _security_init.register_stage_guard(InitStage.NETWORK, _network_guard)
 _security_init.register_stage_guard(InitStage.PRIVILEGES, _privileges_guard)
 _security_init.register_stage_guard(InitStage.SECCOMP, _seccomp_guard)
+_security_init.register_stage_guard(InitStage.RESOURCES, _resources_guard)

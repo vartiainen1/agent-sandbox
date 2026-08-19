@@ -439,9 +439,10 @@ class GuardAndIntegrationTests(unittest.TestCase):
     @skip_unless_linux
     def test_hardened_init_refuses_at_resources(self):
         # Full real path: namespaces + rootfs + pivot_root + network +
-        # no_new_privs + capability reduction + seccomp boundary verified,
-        # then HARDENED refuses at RESOURCES (the next unimplemented
-        # stage).
+        # no_new_privs + capability reduction + seccomp + rlimits boundary
+        # verified, then HARDENED refuses AT RESOURCES (the cgroup v2 half
+        # of the stage is Step 10, ADR-007) - the refusal point stays at
+        # RESOURCES while the stage is incomplete.
         _require_fs(self)
         src = make_source()
         self.addCleanup(shutil.rmtree, src, True)
@@ -450,8 +451,8 @@ class GuardAndIntegrationTests(unittest.TestCase):
         result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
-        self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertIn("no implementation", result.failure.reason)
+        self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
+        self.assertIn("cgroup v2", result.failure.reason)
 
 
 if __name__ == "__main__":
