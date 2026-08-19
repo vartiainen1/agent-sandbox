@@ -301,6 +301,12 @@ class EnvIntegrationTests(unittest.TestCase):
         # RESTRICTED completes RESOURCES (rlimits only, ADR-007) and
         # ENVIRONMENT (sanitization, Step 11) and refuses at the next
         # unimplemented stage (EXECUTION). Fail closed; never a pass.
+        # Substrate gate: the REAL chain must be able to establish the
+        # namespaces/filesystem first (native runner: skipped with the
+        # recorded setgroups/AppArmor reason - the refusal-point
+        # assertion is only meaningful where the boundary can form).
+        from tests.unit import test_resources as tr
+        tr._require_fs(self)
         src = tempfile.mkdtemp(prefix="as-env-int-")
         self.addCleanup(shutil.rmtree, src, True)
         (pathlib.Path(src) / "marker.txt").write_text("x\n")
@@ -318,6 +324,10 @@ class EnvIntegrationTests(unittest.TestCase):
     def test_environment_probe_failure_refuses_real_chain(self):
         # A failing ENVIRONMENT probe must refuse initialization at
         # ENVIRONMENT with STAGE_FAILED - never skip the stage.
+        # Substrate gate: same as the sibling test - the real chain must
+        # be able to reach the ENVIRONMENT stage first.
+        from tests.unit import test_resources as tr
+        tr._require_fs(self)
         src = tempfile.mkdtemp(prefix="as-env-fail-")
         self.addCleanup(shutil.rmtree, src, True)
         (pathlib.Path(src) / "marker.txt").write_text("x\n")
