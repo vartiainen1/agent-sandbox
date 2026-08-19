@@ -87,5 +87,29 @@ runs on every push (Python 3.11 + 3.12):
    records VERIFIED/BLOCKED per mechanism with the reason; an unavailable
    mechanism is never converted into a false PASS.
 
-Results are recorded in this file after the first native run; container
-results remain labeled container-validated regardless.
+## Native Linux results (first run, 2026-08-19 — run 32242402621)
+
+Both matrix cells (ubuntu-latest, Python 3.11 + 3.12) **GREEN**.
+
+| Check | 3.11 | 3.12 |
+|---|---|---|
+| Compile check | PASS | PASS |
+| Unit + regression suite (18 checks) | PASS | PASS |
+| Native trace | 44 unique syscalls, all workloads exit 0 | 44 |
+| Seccomp regression gate (no expansion) | PASS (44 ⊆ 45) | PASS |
+| Behavioral probe (non-root) | ALL PASS | ALL PASS |
+| Rootless capability detection | userns VERIFIED, seccomp-as-nonroot VERIFIED, no_new_privs VERIFIED (uid 1001) | same |
+
+**Docker-vs-native difference observed**: the native non-root surface is
+44 syscalls vs 45 in the root container run. The difference is exactly one
+syscall — `poll`, observed only under root. A non-root re-run of the trace
+in the same container also yields 44, and the non-root container surface
+**matches the native surface exactly** (44 = 44). The allowlist (45) is a
+strict superset of all three observed surfaces; the gate passed everywhere.
+
+**Rootless status (honest)**: the GitHub-hosted ubuntu runner permits
+unprivileged user namespaces, and seccomp install + no_new_privs work as
+uid 1001 — so the rootless *mechanisms* are exercisable natively. The full
+uid 0→caller-mapped runtime path (namespaces + pivot_root + caps under the
+mapping) is still NOT validated — that is a Phase 1 runtime test. No
+mechanism was reported VERIFIED that was not actually exercised.
