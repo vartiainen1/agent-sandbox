@@ -29,17 +29,26 @@ Step 5 (network deny-by-construction): the netns created in Step 2 is
 configured into its final v0.1 state - lo brought DOWN (ensure_loopback_down)
 and the resulting state VERIFIED by PID 1 (only lo, lo DOWN, no
 addresses, no usable routes, distinct from host netns - network.py); any
-unexpected element is a refusal. PID 1 then mounts the sandbox proc view
-(/proc with hidepid=2 - only PID 1 can mount a procfs showing the
-sandbox's own processes) and runs the workload inside the new root; a
-failed or unverifiable boundary aborts BEFORE the workload fn runs (fail
-closed).
+unexpected element is a refusal.
+
+Step 6 (no_new_privs, S-010, ADR-008): PID 1 establishes no_new_privs
+(prctl PR_SET_NO_NEW_PRIVS) and verifies the kernel-state read-back
+(PR_GET_NO_NEW_PRIVS == 1) immediately before invoking the workload
+function - ordering is structural, the workload cannot execute before
+the invariant is established (privileges.py). It precedes the seccomp
+install (Step 13): an unprivileged process may only load a filter after
+no_new_privs is set.
+
+PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
+1 can mount a procfs showing the sandbox's own processes) and runs the
+workload inside the new root; a failed or unverifiable boundary aborts
+BEFORE the workload fn runs (fail closed).
 
 The supervisor NEVER enters the namespaces or the new root: it must keep
 its host view (cleanup, audit, timeout - later steps). The NAMESPACES,
-FILESYSTEM and NETWORK stage guards therefore probe the real path in
-forked children and report a StageCheck back; a failed or unverifiable
-probe is a refusal, never a skip.
+FILESYSTEM, NETWORK and PRIVILEGES stage guards therefore probe the real
+path in forked children and report a StageCheck back; a failed or
+unverifiable probe is a refusal, never a skip.
 """
 
 from __future__ import annotations
@@ -50,7 +59,7 @@ import sys
 from dataclasses import dataclass
 
 from agent_sandbox.isolation import filesystem as fs_mod
-from agent_sandbox.isolation import namespaces, network as net_mod, rootfs, syscalls, userns
+from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, rootfs, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import InitFailureCode, InitStage, StageCheck
 
@@ -143,6 +152,10 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
                     _mount_and_verify_proc()
                 net_mod.verify_deny_by_construction(
                     state.host_ns.get("net", ""))
+                # Step 6: no_new_privs established + kernel-state read-back
+                # verified BEFORE the workload fn - the workload cannot
+                # execute on an unverified privilege state (fail closed).
+                priv_mod.establish_and_verify()
             except BaseException as e:  # noqa: BLE001
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
@@ -439,9 +452,74 @@ def _network_guard(config) -> StageCheck:
     return network_probe(config)
 
 
+def privileges_probe(config) -> StageCheck:
+    """Real-path probe of the PRIVILEGES mechanism (no_new_privs
+    established and the kernel-state read-back verified in PID 1 of a
+    forked child, so the supervisor never enters the boundary). This is
+    the PRIVILEGES stage guard's evidence."""
+    return _privileges_probe_impl(config)
+
+
+def _privileges_probe_impl(config) -> StageCheck:
+    if not _security_init._is_linux() or not hasattr(os, "fork"):
+        return StageCheck(
+            ok=False, code=InitFailureCode.PLATFORM_UNSUPPORTED,
+            reason="privileges probe requires Linux with os.fork (fail "
+                   "closed - no_new_privs cannot be established here)")
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            state = enter_all_namespaces()
+        except BaseException as e:  # noqa: BLE001
+            os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
+            os._exit(1)
+        grand = os.fork()
+        if grand == 0:
+            # PID 1: establish no_new_privs and verify the kernel-state
+            # read-back from inside the sandbox; report the verdict (the
+            # only verdict writer).
+            try:
+                priv_mod.establish_and_verify()
+                os.write(write_fd, b"OK")
+            except BaseException as e:  # noqa: BLE001
+                os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
+            os._exit(0)
+        _, status = os.waitpid(grand, 0)
+        os._exit(0 if os.waitstatus_to_exitcode(status) == 0 else 1)
+    os.close(write_fd)
+    data = b""
+    while True:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+    _, status = os.waitpid(pid, 0)
+    msg = data.decode(errors="replace").strip()
+    if msg == "OK":
+        return StageCheck(
+            ok=True,
+            reason="no_new_privs established and kernel-state read-back "
+                   "verified (PR_GET_NO_NEW_PRIVS == 1) in PID 1 of a "
+                   "real forked child")
+    return StageCheck(
+        ok=False, code=InitFailureCode.STAGE_FAILED,
+        reason=msg or f"privileges probe child failed (status {status}) - "
+                      "fail closed, workload not executed")
+
+
+def _privileges_guard(config) -> StageCheck:
+    """PRIVILEGES stage guard (registered below). Probes the real
+    no_new_privs path; HARDENED/RESTRICTED refuse unless it is
+    established and verified."""
+    return privileges_probe(config)
+
+
 # Register the guards with the enforcement core. This module is imported
 # lazily by SecurityInitializer (and directly by tests), so the registry
 # sees each mechanism exactly when it exists - never before.
 _security_init.register_stage_guard(InitStage.NAMESPACES, _namespaces_guard)
 _security_init.register_stage_guard(InitStage.FILESYSTEM, _filesystem_guard)
 _security_init.register_stage_guard(InitStage.NETWORK, _network_guard)
+_security_init.register_stage_guard(InitStage.PRIVILEGES, _privileges_guard)

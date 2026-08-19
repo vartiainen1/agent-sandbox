@@ -34,13 +34,13 @@ class _SyscallTable:
     X86_64 = {
         "getpid": 39, "getuid": 102, "getgid": 104,
         "unshare": 272, "mount": 165, "umount2": 166,
-        "pivot_root": 155,
+        "pivot_root": 155, "prctl": 157,
     }
     # aarch64
     AARCH64 = {
         "getpid": 172, "getuid": 174, "getgid": 175,
         "unshare": 97, "mount": 40, "umount2": 39,
-        "pivot_root": 41,
+        "pivot_root": 41, "prctl": 167,
     }
 
 
@@ -172,6 +172,21 @@ def pivot_root(new_root: bytes, put_old: bytes) -> None:
     _check(_raw(_number("pivot_root"),
                 ctypes.c_char_p(new_root), ctypes.c_char_p(put_old)),
            "pivot_root")
+
+
+# prctl(2) options (kernel ABI)
+PR_SET_NO_NEW_PRIVS = 38   # arg2=1 enables no_new_privs for this thread
+PR_GET_NO_NEW_PRIVS = 39   # returns 0 or 1 (the current no_new_privs value)
+
+
+def prctl(option: int, arg2: int = 0, arg3: int = 0, arg4: int = 0,
+          arg5: int = 0) -> int:
+    """prctl(2): long prctl(int option, unsigned long arg2, ...). Returns
+    the raw kernel value (PR_GET_NO_NEW_PRIVS returns 0 or 1; PR_SET
+    returns 0 on success). A negative return is NEVER success - raises
+    OSError with the real errno (ADR-001)."""
+    return _check(_raw(_number("prctl"), option, arg2, arg3, arg4, arg5),
+                  "prctl")
 
 
 

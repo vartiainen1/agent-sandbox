@@ -51,6 +51,9 @@ jobs:
       - name: Network deny-by-construction tests (netns state, no usable path - authoritative)
         run: python -m unittest tests.unit.test_network -v
 
+      - name: no_new_privs tests (kernel-state read-back, ordering, fail-closed - authoritative)
+        run: python -m unittest tests.unit.test_privileges -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 
