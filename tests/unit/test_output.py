@@ -243,7 +243,11 @@ class SandboxOutputIntegrationTests(unittest.TestCase):
         cfg = RuntimeConfig.from_dict(valid_config(src))
         self.assertEqual(cfg.resources.output_mb, 50)
         # The namespace-only seam (no limits, no output_mb) keeps the
-        # legacy unbounded read.
+        # legacy unbounded read. Real-path portion is substrate-gated
+        # (_require_fs): on hosts where the namespace boundary cannot
+        # form (native runner setgroups/AppArmor), this skips with the
+        # recorded reason instead of failing on a FAIL setup report.
+        _require_fs(self)
         fn = lambda state: "NAMESPACE ONLY"
         run = setup.run_in_sandbox(fn)
         self.assertIn("NAMESPACE ONLY", run.output)
