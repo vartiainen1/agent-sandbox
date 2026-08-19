@@ -80,8 +80,18 @@ verifies both halves: legitimate workloads pass, and
 
 | Substrate | Status | Purpose |
 |---|---|---|
-| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection | Security claims |
-| Docker Desktop (container) | Development / reproducible observation | Iteration on Windows; never labeled as native |
+| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests | Security claims |
+| Docker Desktop (container) | Development / reproducible observation; **only substrate where the full rootless mapping is currently exercised** (uid 1001) | Iteration on Windows; never labeled as native |
+
+**Known native limitation (documented, not hidden)**: the GitHub-hosted
+ubuntu-24.04 runner permits unprivileged `unshare(CLONE_NEWUSER)` but its
+AppArmor userns restriction denies the `setgroups`-deny write (EACCES), so
+the uid 0→caller mapping cannot be established there. The namespace
+real-path tests therefore skip on native CI with the recorded reason
+(never a false PASS); the fail-closed refusal is verified natively; and
+the namespace boundary execution evidence is VERIFIED DOCKER until a
+native host that can provide the mechanism exists (see
+`docs/seccomp-derivation/verification.md`).
 
 ## Companion tools
 

@@ -62,8 +62,8 @@ native Linux.
 | The derived allowlist covers the Tier 0/1 surface (legit workloads pass) | **Container-validated**; native CI pending |
 | Prohibited syscalls are blocked (EPERM) | **Container-validated**; native CI pending |
 | Filter installs after no_new_privs, before exec (architectural) | Architecture decision (Phase 0/1), not yet exercised end-to-end |
-| Syscall surface on a real uid-mapped rootless runtime | **NOT YET VERIFIED** — the container trace ran as root without a user namespace; a native run with the real uid mapping is required |
-| Behavioral equivalence on native ubuntu | **NOT YET VERIFIED** — needs CI |
+| Syscall surface on a real uid-mapped rootless runtime | **VERIFIED DOCKER** (Step 2: full mapping exercised, uid 1001) — **NOT VERIFIED NATIVE** (24.04 runner blocks setgroups deny, EACCES) |
+| Behavioral equivalence on native ubuntu | **VERIFIED** — native trace + probe + gate green |
 
 Docker caveats recorded: container ran as uid 0 without a user namespace;
 Docker's own seccomp/capability stack is not the product's boundary and
@@ -107,9 +107,63 @@ in the same container also yields 44, and the non-root container surface
 **matches the native surface exactly** (44 = 44). The allowlist (45) is a
 strict superset of all three observed surfaces; the gate passed everywhere.
 
-**Rootless status (honest)**: the GitHub-hosted ubuntu runner permits
-unprivileged user namespaces, and seccomp install + no_new_privs work as
-uid 1001 — so the rootless *mechanisms* are exercisable natively. The full
-uid 0→caller-mapped runtime path (namespaces + pivot_root + caps under the
-mapping) is still NOT validated — that is a Phase 1 runtime test. No
-mechanism was reported VERIFIED that was not actually exercised.
+**Rootless status (honest, corrected 2026-08-19)**: the earlier
+"userns VERIFIED" line probed only `unshare(CLONE_NEWUSER)` — creation,
+not the mapping. The Phase 1 Step 2 namespace tests exercised the FULL
+rootless path (unshare → setgroups deny → uid_map/gid_map write →
+read-back verify) and exposed that the GitHub-hosted ubuntu-24.04 runner
+**cannot establish the uid 0→caller mapping**: `setgroups deny` fails with
+EACCES (AppArmor userns restriction, default on 24.04). The probe was
+upgraded to exercise the full path and now reports per-mechanism truth.
+No mechanism is reported VERIFIED that was not actually exercised.
+
+## Phase 1 Step 2 — namespace isolation results (2026-08-19)
+
+Mechanism implemented: user/mount/PID/network/UTS/IPC namespaces with
+verified uid/gid mapping, rootless PID-1 double-fork, NAMESPACES stage
+guard (fail-closed; `agent_sandbox/isolation/`). The evidence below is
+**real Linux execution**, labeled exactly as it was obtained.
+
+### Container-validated (Docker Desktop, WSL2 kernel, uid 1001)
+
+- 21 namespace tests PASS (user ns, uid/gid mapping, setgroups deny, host
+  caller unprivileged + sandbox-side uid 0, PID-1 semantics with raw
+  pid 1, host-process invisibility, mount ns + host mount namespace
+  unchanged, network ns + no host interfaces/routes, combined setup,
+  failure-mode refusals).
+- Command: `docker run -u 1001 --security-opt seccomp=unconfined ...
+  python3 -B -m unittest tests.unit.test_namespaces`.
+- **Substrate caveat**: Docker Desktop's DEFAULT seccomp profile blocks
+  `unshare(CLONE_NEWUSER)` (EPERM) — the container's seccomp is Docker's,
+  not ours, so `seccomp=unconfined` was used to exercise OUR namespace
+  code. Under the default profile the probe refuses honestly (BLOCKED:
+  unshare EPERM) — the same fail-closed path the runtime uses. The product
+  applies its own seccomp filter later (Phase 1 Step 13), inside its own
+  sandbox.
+
+### Native ubuntu CI (run 32246741335, authoritative) — substrate limitation
+
+| Check | 3.11 | 3.12 |
+|---|---|---|
+| Namespace real-path tests | SKIPPED (substrate unavailable, reason recorded) | same |
+| Fail-closed refusal (guard refuses when mechanism unavailable) | **PASS** (real EACCES path) | **PASS** |
+| Failure-mode tests (patched EPERM/mapping/state seams) | **PASS** | **PASS** |
+| Skeleton + wiring tests | **PASS** | **PASS** |
+| Rootless capability probe | `userns-mapping: BLOCKED (setgroups deny errno=13 EACCES)` | same |
+
+**Finding (documented, not papered over)**: the GitHub-hosted
+ubuntu-24.04 runner permits unprivileged `unshare(CLONE_NEWUSER)` but the
+AppArmor userns restriction (`kernel.apparmor_restrict_unprivileged_userns`)
+denies the setgroups-deny write (EACCES), so the uid 0→caller mapping
+cannot be established unprivileged there. Consequences, per the user
+directive (detect, record, never false-PASS, never weaken):
+
+- The real-path namespace tests SKIP on that substrate with the recorded
+  reason; they are NOT claimed as native-verified.
+- The **fail-closed behavior is itself verified natively**: the guard
+  refuses with the exact EACCES reason and no workload executes.
+- The namespace boundary execution evidence is VERIFIED DOCKER only until
+  a native host that can provide the mechanism exists (self-hosted runner
+  or VM with userns enabled is the open question).
+- The rootless capability probe now exercises the full mapping and reports
+  BLOCKED with the reason instead of the earlier creation-only VERIFIED.
