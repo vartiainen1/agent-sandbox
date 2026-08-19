@@ -60,6 +60,9 @@ jobs:
       - name: cgroup v2 tests (delegation probe, four controllers, io device, fail-closed - authoritative)
         run: python -m unittest tests.unit.test_cgroups -v
 
+      - name: environment sanitization tests (six-variable construction, host-env leakage, fail-closed - authoritative)
+        run: python -m unittest tests.unit.test_environment -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 

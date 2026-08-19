@@ -450,10 +450,11 @@ class ResourceIntegrationTests(unittest.TestCase):
         self.assertIn("fail closed", result.failure.reason)
 
     @skip_unless_linux
-    def test_restricted_real_chain_advances_to_environment(self):
-        # RESTRICTED's RESOURCES stage is rlimits only (ADR-007) - it
-        # completes RESOURCES and refuses at the next unimplemented stage
-        # (ENVIRONMENT). Fail closed either way; never a silent pass.
+    def test_restricted_real_chain_advances_to_execution(self):
+        # RESTRICTED completes RESOURCES (rlimits only, ADR-007) and
+        # ENVIRONMENT (sanitization, Step 11) and refuses at the next
+        # unimplemented stage (EXECUTION). Fail closed either way; never
+        # a silent pass.
         _require_fs(self)
         src = tempfile.mkdtemp(prefix="as-rs-int-")
         self.addCleanup(shutil.rmtree, src, True)
@@ -463,7 +464,7 @@ class ResourceIntegrationTests(unittest.TestCase):
         with unittest.mock.patch.object(init_mod, "_is_linux", return_value=True):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.ENVIRONMENT)
+        self.assertEqual(result.failure.stage, InitStage.EXECUTION)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
         self.assertIn("no implementation", result.failure.reason)
 
