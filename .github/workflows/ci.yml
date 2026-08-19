@@ -36,8 +36,11 @@ jobs:
       - name: Compile check (all Python)
         run: python -m compileall -q tools agent_sandbox
 
-      - name: Runtime unit tests (skeleton, fail-closed init, execution gate)
+      - name: Runtime unit tests (skeleton, fail-closed init, execution gate, namespace wiring)
         run: python -m unittest discover -s tests -t . -v
+
+      - name: Namespace isolation tests (real Linux, non-root - authoritative)
+        run: python -m unittest tests.unit.test_namespaces -v
 
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py

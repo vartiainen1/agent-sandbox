@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from agent_sandbox.config import RuntimeConfig
 
 
 class SecurityMode(str, enum.Enum):
@@ -56,6 +60,24 @@ class InitFailureCode(str, enum.Enum):
     PLATFORM_UNSUPPORTED = "platform_unsupported"
     STAGE_UNAVAILABLE = "stage_unavailable"  # mandatory stage has no implementation
     STAGE_FAILED = "stage_failed"            # mandatory stage guard refused
+
+
+@dataclass(frozen=True)
+class StageCheck:
+    """Outcome of one stage guard (the mechanism's report to the
+    fail-closed initializer). ``ok`` means the mechanism was established
+    and verified; the reason is deterministic."""
+
+    ok: bool
+    reason: str = ""
+    code: InitFailureCode = InitFailureCode.STAGE_FAILED
+
+
+# A stage guard takes the validated configuration and reports whether the
+# mechanism it owns is established. Defined here (not in security.init) so
+# mechanism modules (isolation/) can produce StageChecks without importing
+# the enforcement core - avoiding an import cycle and keeping models pure.
+StageGuard = Callable[["RuntimeConfig"], StageCheck]
 
 
 @dataclass(frozen=True)

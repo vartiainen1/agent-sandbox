@@ -14,10 +14,13 @@ Covers the required Step 1 characteristics:
 - later runtime stages (execute) cannot run unless init succeeded
 - no silent downgrade (S-019): mode never changes during init
 
-Behavioral tests only - no mocks of Linux security properties. OS-level
-properties are tested when the actual mechanisms land (Steps 2+). The one
-patching used here is the ``_is_linux`` helper (never sys.platform itself
-- see the 3.12 _winapi lesson in freebuff-errors.txt).
+Behavioral wiring tests - the fail-closed state machine is exercised with
+stage-guard outcomes injected (this file), while the REAL mechanisms are
+tested for real in tests/unit/test_namespaces.py on Linux. The two seams
+patched here: the ``_is_linux`` helper (never sys.platform itself - see the
+3.12 _winapi lesson in freebuff-errors.txt) and the namespace probe
+implementation (``isolation.setup._probe_impl``), so these wiring tests
+are deterministic on any host.
 """
 
 import unittest
@@ -26,9 +29,10 @@ from dataclasses import FrozenInstanceError
 
 from agent_sandbox import config as config_mod
 from agent_sandbox.config import RuntimeConfig
+from agent_sandbox.isolation import setup as setup_mod
 from agent_sandbox.models import (
     ConfigError, ExecutionRefused, InitFailureCode, InitResult, InitStage,
-    SecurityMode)
+    SecurityMode, StageCheck)
 from agent_sandbox.runtime.session import RuntimeSession, SessionState
 from agent_sandbox.security import init as init_mod
 from agent_sandbox.security.init import SecurityInitializer, init_sequence
@@ -145,20 +149,43 @@ class InitializationTests(unittest.TestCase):
     def tearDown(self):
         self._patch.stop()
 
-    def test_hardened_init_refused_when_mechanism_missing(self):
+    def _patch_probe(self, ok: bool, reason: str = "",
+                     code: InitFailureCode = InitFailureCode.STAGE_FAILED):
+        """Inject a deterministic namespace-probe outcome for wiring tests
+        (the REAL probe is exercised in tests/unit/test_namespaces.py)."""
+        return unittest.mock.patch.object(
+            setup_mod, "_probe_impl",
+            return_value=StageCheck(ok=ok, reason=reason, code=code))
+
+    def test_hardened_init_refuses_at_next_unimplemented_stage(self):
+        # Step 2: NAMESPACES guard is registered and passes; HARDENED then
+        # refuses at FILESYSTEM (the next mandatory stage, not yet
+        # implemented) - fail closed, never skip.
         cfg = RuntimeConfig.from_dict(valid_config(mode="hardened"))
-        result = SecurityInitializer(cfg).initialize()
+        with self._patch_probe(True, reason="probe ok (test)"):
+            result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertIs(result.mode, SecurityMode.HARDENED)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertEqual(result.failure.stage, InitStage.NAMESPACES)
+        self.assertEqual(result.failure.stage, InitStage.FILESYSTEM)
         self.assertIn("no implementation", result.failure.reason)
 
-    def test_restricted_init_refused_mechanism_missing(self):
+    def test_hardened_init_refuses_when_namespace_probe_fails(self):
+        cfg = RuntimeConfig.from_dict(valid_config(mode="hardened"))
+        with self._patch_probe(False, reason="namespace probe failed (test)"):
+            result = SecurityInitializer(cfg).initialize()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
+        self.assertEqual(result.failure.stage, InitStage.NAMESPACES)
+        self.assertIn("namespace probe failed (test)", result.failure.reason)
+
+    def test_restricted_init_refused_at_next_unimplemented_stage(self):
         cfg = RuntimeConfig.from_dict(valid_config(mode="restricted"))
-        result = SecurityInitializer(cfg).initialize()
+        with self._patch_probe(True, reason="probe ok (test)"):
+            result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
+        self.assertEqual(result.failure.stage, InitStage.FILESYSTEM)
 
     def test_platform_fail_closed_on_non_linux(self):
         cfg = RuntimeConfig.from_dict(valid_config(mode="compatibility"))
@@ -170,11 +197,12 @@ class InitializationTests(unittest.TestCase):
 
     def test_init_result_is_explicit(self):
         cfg = RuntimeConfig.from_dict(valid_config(mode="hardened"))
-        result = SecurityInitializer(cfg).initialize()
+        with self._patch_probe(True, reason="probe ok (test)"):
+            result = SecurityInitializer(cfg).initialize()
         self.assertIsInstance(result, InitResult)
         self.assertTrue(result.describe().startswith("initialization REFUSED"))
-        self.assertIn("namespaces", result.describe())
-        self.assertEqual(result.failure.stage, InitStage.NAMESPACES)
+        self.assertIn("filesystem", result.describe())
+        self.assertEqual(result.failure.stage, InitStage.FILESYSTEM)
         self.assertIsNotNone(result.failure.reason)
 
     def test_no_silent_downgrade(self):
@@ -198,13 +226,17 @@ class InitializationTests(unittest.TestCase):
                          (InitStage.CONFIG_VALIDATED, InitStage.PLATFORM_LINUX,
                           InitStage.READY))
 
-    def test_no_mechanism_stage_implemented_in_step1(self):
-        # Pins the honest Step 1 state: every mechanism stage is
-        # unregistered, so isolated modes refuse until Steps 2+ register
-        # them deliberately.
+    def test_only_namespaces_stage_registered_in_step2(self):
+        # Pins the honest Step 2 state: exactly NAMESPACES is implemented
+        # (registered by isolation/setup). Stages 3+ (FILESYSTEM..EXECUTION)
+        # remain unregistered, so HARDENED refuses at the first missing one
+        # instead of pretending the boundary is complete.
+        self.assertIn(InitStage.NAMESPACES, init_mod._STAGE_GUARDS)
         for stage in init_mod.MECHANISM_STAGES:
+            if stage is InitStage.NAMESPACES:
+                continue
             self.assertNotIn(stage, init_mod._STAGE_GUARDS,
-                             f"{stage.value} must not be implemented in Step 1")
+                             f"{stage.value} must not be implemented in Step 2")
 
     def test_duplicate_stage_guard_registration_raises(self):
         # Registering a guard for an already-registered stage must raise
@@ -215,7 +247,7 @@ class InitializationTests(unittest.TestCase):
             init_mod.register_stage_guard(InitStage.CONFIG_VALIDATED,
                                           lambda c: None)
         self.assertIn(InitStage.CONFIG_VALIDATED, init_mod._STAGE_GUARDS)
-        self.assertNotIn(InitStage.NAMESPACES, init_mod._STAGE_GUARDS)
+        self.assertNotIn(InitStage.FILESYSTEM, init_mod._STAGE_GUARDS)
 
 
 class SessionGateTests(unittest.TestCase):

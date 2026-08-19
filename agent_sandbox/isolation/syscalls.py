@@ -1,0 +1,139 @@
+"""Raw Linux syscall wrappers via ctypes - the thin, audited kernel boundary.
+
+Rules (ADR-001, ARCHITECTURE.md section 5; the seccomp derivation used the
+same ctypes discipline):
+
+- A negative syscall return is NEVER success. Every wrapper raises
+  ``OSError(errno, strerror(errno))`` on failure - errno is never hidden.
+- Identity reads (``getpid``/``getuid``/``getgid``) go through the raw
+  ``syscall()`` entry point, NOT libc wrappers, so namespace identity is
+  never contaminated by libc-cached values. The verification code in
+  userns.py and setup.py trusts only these values.
+- Syscall numbers are explicit per architecture (x86_64, aarch64). An
+  unsupported architecture fails closed with a deterministic error - it
+  never guesses.
+- Importing this module is safe on any platform (libc binding is lazy);
+  calling the wrappers on a non-Linux host raises OSError, which the
+  fail-closed guards translate into a refusal.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import errno
+import os
+import platform
+
+from agent_sandbox.isolation.errors import NamespaceSetupError
+
+
+class _SyscallTable:
+    """Per-architecture syscall numbers (kernel ABI, not libc)."""
+
+    # x86_64
+    X86_64 = {
+        "getpid": 39, "getuid": 102, "getgid": 104,
+        "unshare": 272, "mount": 165, "umount2": 166,
+    }
+    # aarch64
+    AARCH64 = {
+        "getpid": 172, "getuid": 174, "getgid": 175,
+        "unshare": 97, "mount": 40, "umount2": 39,
+    }
+
+
+def _arch() -> str:
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "x86_64"
+    if machine in ("aarch64", "arm64"):
+        return "aarch64"
+    raise NamespaceSetupError(
+        f"unsupported architecture {machine!r} - syscall numbers unknown, "
+        "fail closed (supported: x86_64, aarch64)")
+
+
+def _number(name: str) -> int:
+    table = _SyscallTable.X86_64 if _arch() == "x86_64" else _SyscallTable.AARCH64
+    return table[name]
+
+
+_libc: ctypes.CDLL | None = None
+_syscall: ctypes._NamedFuncPointer | None = None
+
+
+def _get_syscall():
+    """Lazy libc binding - import-safe on any platform (Windows dev hosts
+    can import this module; only *calls* fail there)."""
+    global _libc, _syscall
+    if _syscall is None:
+        _libc = ctypes.CDLL(None, use_errno=True)
+        fn = _libc.syscall
+        fn.restype = ctypes.c_long
+        fn.argtypes = [
+            ctypes.c_long,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        _syscall = fn
+    return _syscall
+
+
+def _raise_errno(name: str) -> None:
+    e = ctypes.get_errno()
+    raise OSError(e, f"{name}: {os.strerror(e)}")
+
+
+def _check(ret: int, name: str) -> int:
+    """Negative return is NEVER success (ADR-001; deterministic errno)."""
+    if ret < 0:
+        _raise_errno(name)
+    return ret
+
+
+def _raw(number: int, *args) -> int:
+    """Invoke the raw syscall with exactly the declared argument count.
+    ctypes validates the number of args against the prototype, so unused
+    variadic slots are padded with 0 (the kernel ignores them)."""
+    padded = list(args) + [0] * (6 - len(args))
+    return int(_get_syscall()(number, *padded))
+
+
+# ---------------------------------------------------------------------------
+# Raw identity reads (never libc-cached)
+# ---------------------------------------------------------------------------
+
+def getpid() -> int:
+    return _raw(_number("getpid"))
+
+
+def getuid() -> int:
+    return _raw(_number("getuid"))
+
+
+def getgid() -> int:
+    return _raw(_number("getgid"))
+
+
+# ---------------------------------------------------------------------------
+# Namespace / mount operations
+# ---------------------------------------------------------------------------
+
+def unshare(flags: int) -> None:
+    """unshare(2). Raises OSError with the real errno on failure."""
+    _check(_raw(_number("unshare"), flags), "unshare")
+
+
+def mount(source: bytes, target: bytes, fstype: bytes, flags: int,
+          data: bytes = b"") -> None:
+    """mount(2). Used only during namespace setup inside the sandbox's own
+    user namespace (tmpfs mounts for the mount-isolation verification)."""
+    _check(_raw(_number("mount"),
+                ctypes.c_char_p(source), ctypes.c_char_p(target),
+                ctypes.c_char_p(fstype), flags, ctypes.c_char_p(data)),
+           "mount")
+
+
+def umount2(target: bytes, flags: int = 0) -> None:
+    """umount2(2). Unmount inside the sandbox's mount namespace."""
+    _check(_raw(_number("umount2"), ctypes.c_char_p(target), flags), "umount2")

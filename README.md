@@ -17,13 +17,16 @@ audited.
 |---|---|
 | Architecture + threat model (Phase 0) | **COMPLETE** — `ARCHITECTURE.md`, `THREAT_MODEL.md`, `SECURITY_SPEC.md`, `ADRs/` |
 | Seccomp syscall allowlist derivation (Phase 1 pre-task) | **COMPLETE, container-validated** — 45-syscall HARDENED allowlist, behaviorally verified |
-| Runtime implementation (Phase 1) | **NOT STARTED** — no sandbox binary/CLI exists yet |
+| Runtime implementation (Phase 1) | **IN PROGRESS (Step 2)** — minimal skeleton + Linux namespace isolation (user/mount/PID/network/UTS/IPC with uid/gid mapping) implemented and tested; still no runnable sandbox/CLI |
 
-This repository currently contains the security design and the
-reproducible seccomp derivation tooling. **There is no runnable sandbox
-yet**; nothing here should be used to sandbox a workload. Native Linux
-validation runs in CI and is authoritative over the Docker-based results
-(see `docs/seccomp-derivation/verification.md` for the exact labeling).
+This repository currently contains the security design, the reproducible
+seccomp derivation tooling, and the first Phase 1 runtime mechanisms
+(Step 1 skeleton, Step 2 namespace isolation). **There is still no
+runnable sandbox**; HARDENED initialization honestly refuses at the first
+mechanism that is not yet implemented (currently `filesystem`), so nothing
+here should be used to sandbox a workload. Native Linux validation runs
+in CI and is authoritative over the Docker-based results (see
+`docs/seccomp-derivation/verification.md` for the exact labeling).
 
 ## Security model (the short version)
 
@@ -68,8 +71,10 @@ verifies both halves: legitimate workloads pass, and
   outside the allowlist (no undocumented expansion)
 - Change control: `docs/seccomp-derivation/policy.md` §5
 - Known limitations: threads (`clone`) and networking syscalls are denied
-  by design in v0.1; the allowlist is x86_64/glibc-specific; rootless
-  uid-mapped execution is not yet validated (Phase 1).
+  by design in v0.1; the allowlist is x86_64/glibc-specific. The rootless
+  namespace foundation (uid 0→caller mapping) is validated (Step 2); the
+  full runtime path (pivot_root, privileges, seccomp, resources) is not
+  yet (Steps 3+).
 
 ## Validation labeling
 

@@ -18,17 +18,22 @@ Rules enforced here:
   refusal is reported (stable, reproducible reasons).
 - Stage guards REGISTER as the mechanisms are implemented (Phase 1 steps
   2+). An unregistered stage that a mode requires => STAGE_UNAVAILABLE
-  refusal. In Phase 1 Step 1 no mechanism stage is implemented, so
-  HARDENED and RESTRICTED initialization honestly refuse until the
-  mechanisms land; COMPATIBILITY (no isolation claims) initializes with
-  the structural stages only.
+  refusal. In Step 2 the NAMESPACES guard is registered (isolation/setup,
+  imported lazily by this module); stages 3+ are not, so HARDENED and
+  RESTRICTED initialize only as far as the mechanisms that exist and
+  refuse at the first missing one. COMPATIBILITY (no isolation claims)
+  initializes with the structural stages only.
+- The platform seam is ``_is_linux()`` - a single patchable helper. Tests
+  patch this helper, NEVER sys.platform itself (global platform spoofing
+  breaks CPython 3.12's import machinery; see the _winapi incident,
+  freebuff-errors.txt 2026-08-19). Mechanism modules reference it by
+  module so the same seam is honored everywhere.
 """
 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Optional
 
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.models import (
@@ -37,6 +42,8 @@ from agent_sandbox.models import (
     InitResult,
     InitStage,
     SecurityMode,
+    StageCheck,
+    StageGuard,
 )
 
 # Structural stages: implemented in Step 1 and required by EVERY mode.
@@ -60,22 +67,29 @@ MECHANISM_STAGES = (
 _ISOLATED_MODES = frozenset({SecurityMode.HARDENED, SecurityMode.RESTRICTED})
 
 
-@dataclass(frozen=True)
-class StageCheck:
-    """Outcome of one stage guard."""
-
-    ok: bool
-    reason: str = ""
-    code: InitFailureCode = InitFailureCode.STAGE_FAILED
-
-
-StageGuard = Callable[[RuntimeConfig], StageCheck]
-
 # Stage registry: mechanisms register their guards here when implemented
 # (Phase 1 steps 2+). A required stage with NO registered guard refuses
 # initialization - this is the fail-closed shape, not a stub to be
 # papered over.
 _STAGE_GUARDS: dict[InitStage, StageGuard] = {}
+
+# Mechanism guards are registered by their modules (e.g. isolation/setup.py
+# registers NAMESPACES at import). The modules are imported lazily by the
+# initializer so the enforcement core sees exactly the mechanisms that
+# exist, and importing agent_sandbox.security.init never pulls in Linux
+# mechanism code before it is needed.
+_MECHANISM_GUARDS_ENSURED = False
+
+
+def _ensure_mechanism_guards() -> None:
+    """Import implemented mechanism modules so their guards register.
+    Idempotent; unregistered mandatory stages still refuse (fail closed)."""
+    global _MECHANISM_GUARDS_ENSURED
+    if _MECHANISM_GUARDS_ENSURED:
+        return
+    # noqa: F401 - the import's side effect (guard registration) is the point.
+    from agent_sandbox.isolation import setup as _setup  # noqa: F401
+    _MECHANISM_GUARDS_ENSURED = True
 
 
 def register_stage_guard(stage: InitStage, guard: StageGuard) -> None:
@@ -146,6 +160,7 @@ class SecurityInitializer:
         self._config = config
 
     def initialize(self) -> InitResult:
+        _ensure_mechanism_guards()
         config = self._config
         for stage in init_sequence(config.mode):
             if stage is InitStage.READY:
