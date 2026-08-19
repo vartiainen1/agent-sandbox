@@ -69,6 +69,9 @@ jobs:
       - name: bounded output tests (S-037 bounded pipe, truncation notice, no bypass, fail-closed - authoritative)
         run: python -m unittest tests.unit.test_output -v
 
+      - name: external timeout tests (S-036 supervisor deadline, session termination, no false success - authoritative)
+        run: python -m unittest tests.unit.test_timeout -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 

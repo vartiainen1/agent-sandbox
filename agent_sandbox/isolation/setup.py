@@ -101,6 +101,18 @@ stage mechanism - the stage guard still does NOT register until items
 19-20 (timeout, process-tree cleanup) land, so isolated modes keep
 refusing at EXECUTION (fail closed).
 
+Step 14 (external timeout, S-036, ADR-011, item 19): the supervisor
+enforces an external wall-clock deadline (wall_time_seconds - the
+validated ResourceLimits policy, default 900) while collecting the
+bounded output: each wait is bounded by the remaining time (select +
+time.monotonic, both supervisor-side), and on expiry the supervisor
+terminates the session and marks SandboxRun.timed_out with a timeout
+notice (timeout.py). The deadline lives entirely in the supervisor - the
+workload cannot disable, evade, or reset it (no shared clock, no caps,
+no channel). The EXECUTION guard still does NOT register (item 20 -
+process-tree containment - remains), so isolated modes keep refusing at
+EXECUTION (fail closed).
+
 PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
 1 can mount a procfs showing the sandbox's own processes) and runs the
 workload inside the new root; a failed or unverifiable boundary aborts
@@ -126,6 +138,7 @@ from agent_sandbox.isolation import credentials as cred_mod
 from agent_sandbox.isolation import environment as env_mod
 from agent_sandbox.isolation import filesystem as fs_mod
 from agent_sandbox.isolation import output as output_mod
+from agent_sandbox.isolation import timeout as timeout_mod
 from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, resources as resources_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import InitFailureCode, InitStage, SecurityMode, StageCheck
@@ -154,6 +167,9 @@ class SandboxRun:
     output: str
     truncated: bool = False  # S-037: True iff the output bound was hit
                               # and the session terminated with a notice
+    timed_out: bool = False  # S-036: True iff the external wall-clock
+                             # deadline expired and the supervisor
+                             # terminated the session
 
 
 def enter_all_namespaces() -> NamespaceState:
@@ -178,7 +194,8 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                    limits: ResourceLimits | None = None,
                    cgroup_session=None,
                    env_allowlist: tuple[str, ...] | None = None,
-                   output_mb: int | None = None
+                   output_mb: int | None = None,
+                   wall_time_seconds: int | None = None
                    ) -> SandboxRun:
     """Run ``fn`` inside the full sandbox boundary.
 
@@ -206,6 +223,13 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     appended to the output). The bound cannot be bypassed by the
     workload - the pipe is the only output channel, and the kernel
     enforces it (EPIPE/SIGPIPE once the read end is closed).
+    With ``wall_time_seconds`` (Step 14): the supervisor enforces an
+    external wall-clock deadline (S-036) - each wait for output is
+    bounded by the remaining time; on expiry it terminates the session
+    and marks ``SandboxRun.timed_out`` (a timeout notice is appended).
+    The deadline lives entirely in the supervisor process - the
+    workload cannot disable, evade, or reset it (no shared clock, no
+    caps, no channel).
 
     The supervisor stays outside; the kernel enforces the boundary for
     fn's whole process tree. Any boundary failure aborts BEFORE fn runs
@@ -320,18 +344,36 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
         _, status = os.waitpid(pid, 0)
         return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
                           output=output.decode(errors="replace"))
-    # S-037 (Step 13): bounded read; past the limit the supervisor
+    # S-037 (Step 13) + S-036 (Step 14): bounded read with an external
+    # wall-clock deadline. On truncation OR timeout the supervisor
     # terminates the session (closes the read end + kills the controlled
     # child - further workload writes then fail with EPIPE/SIGPIPE). The
-    # workload cannot bypass the bound: the pipe is the only channel.
+    # workload cannot bypass the bound or the deadline: the pipe is the
+    # only channel, and the deadline lives only in this supervisor
+    # process.
+    wall = wall_time_seconds if wall_time_seconds is not None else (
+        limits.wall_time_seconds if limits is not None else None)
     limit_bytes = bound * output_mod.MIB
-    data, truncated = output_mod.collect_bounded(out_r, pid, limit_bytes)
+    if wall is None:
+        # Bound-only call (Step 13 test seam): no deadline configured.
+        data, truncated = output_mod.collect_bounded(
+            out_r, pid, limit_bytes)
+        _, status = os.waitpid(pid, 0)
+        text = data.decode(errors="replace")
+        if truncated:
+            text += output_mod.truncation_notice(bound)
+        return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
+                          output=text, truncated=truncated)
+    data, truncated, timed_out = timeout_mod.collect_session_output(
+        out_r, pid, limit_bytes, wall)
     _, status = os.waitpid(pid, 0)
     text = data.decode(errors="replace")
     if truncated:
         text += output_mod.truncation_notice(bound)
+    if timed_out:
+        text += timeout_mod.timeout_notice(wall)
     return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
-                      output=text, truncated=truncated)
+                      output=text, truncated=truncated, timed_out=timed_out)
 
 
 def _pid1_verification(state: NamespaceState) -> str:
