@@ -18,19 +18,30 @@ itself join the new PID namespace - only its children do (namespaces.py
 docstring). Child B is therefore the first process in the new PID
 namespace and is PID 1 there (ADR-004).
 
-The supervisor NEVER enters the namespaces: it must keep its host view
-(cleanup, audit, timeout - later steps). The NAMESPACES stage guard
-therefore probes the real path in a forked child and reports a StageCheck
-back; a failed or unverifiable probe is a refusal, never a skip.
+Step 3 (filesystem boundary): when a rootfs is supplied, child A ALSO
+establishes the filesystem boundary before forking - private mount
+propagation, the rootfs tree bind-mounted into a mount point, a
+size-limited tmpfs at /tmp, pivot_root into the rootfs, and detachment of
+the old root (filesystem.py). PID 1 then runs the workload inside the new
+root; a failed or unverifiable boundary aborts BEFORE the workload fn runs
+(fail closed).
+
+The supervisor NEVER enters the namespaces or the new root: it must keep
+its host view (cleanup, audit, timeout - later steps). The NAMESPACES and
+FILESYSTEM stage guards therefore probe the real path in forked children
+and report a StageCheck back; a failed or unverifiable probe is a refusal,
+never a skip.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 
-from agent_sandbox.isolation import namespaces, syscalls, userns
+from agent_sandbox.isolation import filesystem as fs_mod
+from agent_sandbox.isolation import namespaces, rootfs, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import InitFailureCode, InitStage, StageCheck
 
@@ -76,24 +87,31 @@ def enter_all_namespaces() -> NamespaceState:
     return NamespaceState(userns=state, host_ns=host_ns, sandbox_ns=sandbox_ns)
 
 
-def run_in_sandbox(fn) -> SandboxRun:
-    """Run ``fn(state)`` inside the full namespace boundary (user+mount+
-    PID+network+UTS+IPC). ``fn`` receives the verified NamespaceState and
-    may return a str, which is captured as ``output``. The supervisor stays
-    outside; the kernel enforces the boundary for fn's whole process tree.
+def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
+    """Run ``fn`` inside the full sandbox boundary.
 
-    Returns a SandboxRun(exit_code, output). exit_code 0 means fn ran to
-    completion; anything else is a deterministic failure (raised error or
-    exit status).
-    """
+    Namespaces only (Step 2): ``fn(state)`` - state is the verified
+    NamespaceState.
+    With a rootfs (Step 3): the filesystem boundary is established too
+    (private propagation, bind rootfs, tmpfs /tmp, pivot_root, old-root
+    detach, verification) and ``fn(state, fs)`` is called with the
+    verified FilesystemState. fn may return a str, captured as ``output``.
+
+    The supervisor stays outside; the kernel enforces the boundary for
+    fn's whole process tree. Any boundary failure aborts BEFORE fn runs
+    (fail closed - fn never executes on a partial boundary)."""
     out_r, out_w = os.pipe()
     pid = os.fork()
     if pid == 0:
-        # Child A: enters the namespaces, then forks so its child becomes
+        # Child A: enters the namespaces, establishes the filesystem
+        # boundary (if a rootfs is given), then forks so its child becomes
         # PID 1 of the new PID namespace (documented PID semantics).
         os.close(out_r)
         try:
             state = enter_all_namespaces()
+            fs_state = None
+            if rootfs_state is not None:
+                fs_state = fs_mod.establish_rootfs(rootfs_state, disk_mb)
         except BaseException as e:  # noqa: BLE001 - report, don't propagate across fork
             os.write(out_w, f"FAIL setup: {type(e).__name__}: {e}\n".encode())
             os._exit(1)
@@ -104,7 +122,10 @@ def run_in_sandbox(fn) -> SandboxRun:
             os.dup2(out_w, 2)
             os.close(out_w)
             try:
-                result = fn(state)
+                if fs_state is None:
+                    result = fn(state)
+                else:
+                    result = fn(state, fs_state)
                 if result is not None:
                     print(result)
                 sys.stdout.flush()
@@ -216,7 +237,102 @@ def _namespaces_guard(config) -> StageCheck:
     return namespace_probe()
 
 
-# Register the guard with the enforcement core. This module is imported
+def _fs_pid1_verification(state: NamespaceState,
+                          fs: fs_mod.FilesystemState) -> str:
+    """PID-1-side verification of the filesystem boundary (runs inside the
+    new root). Returns "OK" or "FAIL <detail>" - never a silent pass."""
+    problems: list[str] = []
+    cur = os.stat("/")
+    if (cur.st_dev, cur.st_ino) != fs.root_identity:
+        problems.append(
+            f"root identity mismatch in PID 1: / is {(cur.st_dev, cur.st_ino)}")
+    if os.getcwd() != "/":
+        problems.append(f"cwd is {os.getcwd()!r}, expected /")
+    if not os.path.isdir("/workspace"):
+        problems.append("/workspace missing in PID 1")
+    hits = fs_mod._probe_absent(fs_mod.MANDATORY_ABSENT_PATHS)
+    if hits:
+        problems.append("host path(s) reachable in PID 1: " + ", ".join(hits))
+    if problems:
+        return "FAIL " + "; ".join(problems)
+    return "OK"
+
+
+def filesystem_probe(config) -> StageCheck:
+    """Real-path probe of the FILESYSTEM boundary (rootfs build ->
+    namespaces -> mounts -> pivot_root -> old-root detach -> in-root
+    verification), run in a forked child so the supervisor never enters the
+    boundary. This is the FILESYSTEM stage guard's evidence."""
+    return _filesystem_probe_impl(config)
+
+
+def _filesystem_probe_impl(config) -> StageCheck:
+    if not _security_init._is_linux() or not hasattr(os, "fork"):
+        return StageCheck(
+            ok=False, code=InitFailureCode.PLATFORM_UNSUPPORTED,
+            reason="filesystem probe requires Linux with os.fork (fail "
+                   "closed - the rootfs boundary cannot be established here)")
+    # Build the rootfs host-side first (supervisor makes the workspace
+    # copy, ARCHITECTURE section 7) so a build failure refuses WITHOUT
+    # forking, and the parent can clean the tree afterwards.
+    try:
+        rootfs_state = rootfs.build_rootfs(config.workspace)
+    except NamespaceSetupError as e:
+        return StageCheck(ok=False, code=InitFailureCode.STAGE_FAILED,
+                          reason=f"rootfs build failed: {e} - fail closed, "
+                                 "workload not executed")
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            state = enter_all_namespaces()
+            fs_state = fs_mod.establish_rootfs(rootfs_state, config.resources.disk_mb)
+        except BaseException as e:  # noqa: BLE001
+            os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
+            os._exit(1)
+        grand = os.fork()
+        if grand == 0:
+            # PID 1: verify the filesystem boundary from inside the new root.
+            try:
+                verdict = _fs_pid1_verification(state, fs_state)
+                os.write(write_fd, verdict.encode())
+            except BaseException as e:  # noqa: BLE001
+                os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
+            os._exit(0)
+        _, status = os.waitpid(grand, 0)
+        os._exit(0 if os.waitstatus_to_exitcode(status) == 0 else 1)
+    os.close(write_fd)
+    data = b""
+    while True:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+    _, status = os.waitpid(pid, 0)
+    shutil.rmtree(rootfs_state.layout.dir, ignore_errors=True)  # best-effort
+    msg = data.decode(errors="replace").strip()
+    if msg == "OK":
+        return StageCheck(
+            ok=True,
+            reason="minimal rootfs + workspace copy + pivot_root + old-root "
+                   "detach + private mount propagation established and "
+                   "verified in a real forked child")
+    return StageCheck(
+        ok=False, code=InitFailureCode.STAGE_FAILED,
+        reason=msg or f"filesystem probe child failed (status {status}) - "
+                      "fail closed, workload not executed")
+
+
+def _filesystem_guard(config) -> StageCheck:
+    """FILESYSTEM stage guard (registered below). Probes the real rootfs
+    boundary; HARDENED/RESTRICTED refuse unless it is established and
+    verified."""
+    return filesystem_probe(config)
+
+
+# Register the guards with the enforcement core. This module is imported
 # lazily by SecurityInitializer (and directly by tests), so the registry
-# sees the mechanism exactly when it exists - never before.
+# sees each mechanism exactly when it exists - never before.
 _security_init.register_stage_guard(InitStage.NAMESPACES, _namespaces_guard)
+_security_init.register_stage_guard(InitStage.FILESYSTEM, _filesystem_guard)

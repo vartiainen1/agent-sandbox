@@ -42,6 +42,9 @@ jobs:
       - name: Namespace isolation tests (real Linux, non-root - authoritative)
         run: python -m unittest tests.unit.test_namespaces -v
 
+      - name: Filesystem boundary tests (rootfs, pivot_root, workspace isolation - authoritative)
+        run: python -m unittest tests.unit.test_rootfs -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 

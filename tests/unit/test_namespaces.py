@@ -381,17 +381,20 @@ class FailureModeTests(unittest.TestCase):
 
 class ProbeIntegrationTests(unittest.TestCase):
     @skip_unless_linux
-    def test_namespace_probe_ok_and_hardened_refuses_at_filesystem(self):
-        # The real probe establishes the full namespace boundary; HARDENED
-        # then refuses at the NEXT unimplemented stage (FILESYSTEM) - the
-        # fail-closed chain works end to end. Skipped (with reason) on a
-        # substrate that cannot provide the mapping.
+    def test_namespace_probe_ok_and_hardened_refuses_at_network(self):
+        # The real probes establish the full namespace boundary AND the
+        # filesystem boundary (real rootfs + pivot_root, built from a real
+        # workspace); HARDENED then refuses at the NEXT unimplemented stage
+        # (NETWORK) - the fail-closed chain works end to end. Skipped (with
+        # reason) on a substrate that cannot provide the mapping.
         _require_rootless(self)
         check = setup.namespace_probe()
         self.assertTrue(check.ok, check.reason)
-        result = SecurityInitializer(_config("hardened")).initialize()
+        with tempfile.TemporaryDirectory(prefix="as-ns-ws-") as ws:
+            cfg = _config("hardened", workspace=ws)
+            result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.FILESYSTEM)
+        self.assertEqual(result.failure.stage, InitStage.NETWORK)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
         self.assertIn("no implementation", result.failure.reason)
 
@@ -428,9 +431,11 @@ class ProbeIntegrationTests(unittest.TestCase):
         self.assertIn("fail closed", check.reason)
 
 
-def _config(mode: str):
+def _config(mode: str, workspace: str = "/srv/agent-workspace"):
     from agent_sandbox.config import RuntimeConfig
-    return RuntimeConfig.from_dict(valid_config(mode=mode))
+    cfg = valid_config(mode=mode)
+    cfg["workspace"] = workspace
+    return RuntimeConfig.from_dict(cfg)
 
 
 if __name__ == "__main__":
