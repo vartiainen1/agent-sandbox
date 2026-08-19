@@ -801,3 +801,53 @@ refuse at EXECUTION (the next unimplemented stage) — never a silent pass.
   (bounded output, timeout, process-tree cleanup) is the next
   unimplemented stage — isolated modes still refuse there; rootless
   cgroup enforcement remains the Step 10 open item.
+## Phase 1 Step 12 — credential/socket isolation results (2026-08-19)
+
+Policy (ADR-009, S-003/S-004, T-016/T-019/T-020): the sandbox must not be
+able to reach host credentials, credential stores, agent/SSH/cloud
+credential paths, or Docker/container/control Unix sockets. Absence by
+boundary is the preferred property. Enforcement is by construction
+(fresh rootfs + workspace copy, sanitized env, socket syscall class
+denied by the Step 8 filter) — Step 12 verifies the boundary and fails
+closed on any exposure.
+
+Mechanism (`isolation/credentials.py`): `CREDENTIAL_PATHS` canonical
+list (host home, .ssh, .aws, .kube, /root, /run, docker/containerd
+sockets, etc.) checked for reachability from the workload view;
+`SOCKET_ENV_NAMES` (SSH_AUTH_SOCK, DOCKER_HOST, etc.) verified absent
+after sanitization; socket-creation denial verified inside the sandbox.
+Wired: PID-1 verification after env sanitization, ENVIRONMENT probe half
+verifies the constructed env carries no socket/credential variable.
+
+### Step 12 evidence
+
+- **HOST-SIDE VERIFIED** (Windows 307 OK / 146 substrate skips): path
+  reachability semantics, env verification, socket-denial seam, failure
+  injection, config rejection, workload-not-executed refusals.
+- **DOCKER VERIFIED** (uid 1001, real sandbox under the ACTUAL filter):
+  full suite 307 OK (3 honest skips); credential/socket tests exercise
+  the real boundary — reachability checks against the sandbox view,
+  socket-creation denial (EPERM from the filter), env isolation
+  preserved.
+- **NATIVE VERIFIED**: host-side logic and fail-closed behavior; full
+  rootless sandbox path NOT VERIFIED NATIVE (recorded AppArmor/setgroups
+  substrate reason).
+- **SEPARATION**: no syscall added — the socket class was already denied
+  by the 45-syscall allowlist; gate remains exactly 45.
+- **INVARIANTS PRESERVED**: NoNewPrivs=1, cap sets zero, filter
+  installed, rlimits enforced, cgroup controls preserved where delegated,
+  six-variable sanitized env intact.
+
+### Step 12 labels
+
+- **DESIGN INTENT** (ADR-009, S-003/S-004): absence-by-boundary for all
+  named credential/control surfaces.
+- **DOCKER VERIFIED**: reachability absence, env cleanliness, and
+  socket-creation denial demonstrated in the real sandbox under the
+  filter.
+- **NATIVE VERIFIED**: host-side logic + fail-closed; sandbox-internal
+  path NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: ENVIRONMENT stage now complete; EXECUTION
+  (bounded output, timeout, process-tree cleanup) remains the next
+  unimplemented stage; rootless cgroup enforcement remains the Step 10
+  open item.

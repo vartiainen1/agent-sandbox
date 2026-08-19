@@ -63,6 +63,9 @@ jobs:
       - name: environment sanitization tests (six-variable construction, host-env leakage, fail-closed - authoritative)
         run: python -m unittest tests.unit.test_environment -v
 
+      - name: credential/socket isolation tests (host path absence, socket env, denial, fail-closed - authoritative)
+        run: python -m unittest tests.unit.test_credentials -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 

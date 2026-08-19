@@ -28,11 +28,15 @@ Rules enforced here:
   RESOURCES with the precise detected reason (read-only / not delegated /
   missing controller / unresolvable io device) - never a partial
   success; when it is established, HARDENED advances. ENVIRONMENT is
-  complete (Step 11): the approved six-variable sandbox environment
+  complete (Steps 11-12): the approved six-variable sandbox environment
   (PATH/HOME/TMPDIR/LANG/LC_ALL/TERM - host env never inherited, S-034)
-  is constructed, applied and verified in PID 1. RESTRICTED completes its
-  RESOURCES stage with rlimits only (ADR-007) and both isolated modes
-  now refuse at EXECUTION (the next unimplemented stage).
+  is constructed, applied and verified in PID 1, and credential/socket
+  isolation is verified from the workload view (S-003/S-004: no host
+  credential or control-socket path reachable, no socket/credential env
+  variable survives, Unix-socket creation denied by the filter).
+  RESTRICTED completes its RESOURCES stage with rlimits only (ADR-007)
+  and both isolated modes now refuse at EXECUTION (the next
+  unimplemented stage).
   COMPATIBILITY (no isolation claims) initializes with the structural
   stages only.
 - The platform seam is ``_is_linux()`` - a single patchable helper. Tests

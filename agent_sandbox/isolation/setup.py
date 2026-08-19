@@ -108,6 +108,7 @@ from dataclasses import dataclass
 
 from agent_sandbox.config import DEFAULT_ENV_ALLOWLIST, ResourceLimits
 from agent_sandbox.isolation import cgroups as cgroups_mod
+from agent_sandbox.isolation import credentials as cred_mod
 from agent_sandbox.isolation import environment as env_mod
 from agent_sandbox.isolation import filesystem as fs_mod
 from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, resources as resources_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
@@ -247,6 +248,18 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 # failure refuses (workload never executes on a partial
                 # environment).
                 env_mod.sanitize_and_verify(env_allowlist)
+                # Step 12: verify credential/socket isolation from the
+                # WORKLOAD view (rootfs path only - the boundary that
+                # makes host credentials/control sockets absent by
+                # construction, S-003/S-004): no credential or
+                # control-socket path may be reachable, no
+                # socket/credential env variable may have survived, and
+                # Unix-socket creation must be DENIED by the installed
+                # filter (socket class not in the 45-syscall allowlist).
+                # Any exposure refuses before the workload fn.
+                if fs_state is not None:
+                    cred_mod.verify_credential_isolation(
+                        require_socket_denial=True)
             except BaseException as e:  # noqa: BLE001
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
@@ -795,17 +808,23 @@ def _resources_guard(config) -> StageCheck:
 
 
 def environment_probe(config) -> StageCheck:
-    """Real-path probe of the ENVIRONMENT mechanism (construct the
-    approved six-variable sandbox environment - host env never inherited,
-    S-034 - replace the process environment and verify the LIVE
-    environment: exactly the allowlisted variables with exactly the
-    approved values), run in a forked child so the supervisor never
-    inherits a sanitized environment.
+    """Real-path probe of the ENVIRONMENT mechanism (Steps 11-12):
+    construct the approved six-variable sandbox environment - host env
+    never inherited, S-034 - replace the process environment, verify the
+    LIVE environment (exactly the allowlisted variables with exactly the
+    approved values), AND verify the constructed environment carries no
+    socket/credential variable (S-003/S-004 - SSH_AUTH_SOCK, DOCKER_HOST,
+    AWS_*, KUBECONFIG, ... cannot survive), run in a forked child so the
+    supervisor never inherits a sanitized environment.
 
     ENVIRONMENT-stage shape (ADR-009): the workload environment is the
     six constructed variables only (PATH/HOME/TMPDIR/LANG/LC_ALL/TERM -
     config rejects anything beyond them). Any construction, replacement,
-    or verification failure is a refusal with the precise reason."""
+    or verification failure is a refusal with the precise reason. The
+    full credential/socket BOUNDARY verification (path reachability +
+    socket-creation denial from the workload view) happens inside the
+    sandbox in run_in_sandbox (Step 12) and is exercised by the
+    sandbox-internal tests."""
     return _environment_probe_impl(config)
 
 
@@ -819,6 +838,9 @@ def _environment_probe_impl(config) -> StageCheck:
         os.close(read_fd)
         try:
             env_mod.sanitize_and_verify(config.env_allowlist)
+            # Step 12 probe half: the CONSTRUCTED env must carry no
+            # socket/credential variable (S-003/S-004).
+            cred_mod.verify_isolated_env(dict(os.environ))
             os.write(write_fd, b"OK")
         except BaseException as e:  # noqa: BLE001
             os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
@@ -838,8 +860,9 @@ def _environment_probe_impl(config) -> StageCheck:
             reason="approved six-variable sandbox environment constructed, "
                    "applied and verified in a real forked child: exactly "
                    "PATH/HOME/LANG/LC_ALL/TERM/TMPDIR with the approved "
-                   "values, no host variable present (host env never "
-                   "inherited, S-034)")
+                   "values, no host variable present, and no "
+                   "socket/credential variable survives (S-034, S-003, "
+                   "S-004)")
     return StageCheck(
         ok=False, code=InitFailureCode.STAGE_FAILED,
         reason=msg or f"environment probe child failed (status {status}) - "
