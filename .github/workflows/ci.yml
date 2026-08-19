@@ -75,6 +75,9 @@ jobs:
       - name: process-tree containment + cleanup tests (S-014 child subreaper, whole-tree kill, S-038 absence verification - authoritative)
         run: python -m unittest tests.unit.test_lifecycle -v
 
+      - name: minimal successful workload tests (end-to-end item 22 - deterministic output, in-sandbox invariants, READY gate, fail-closed - authoritative)
+        run: python -m unittest tests.unit.test_workload -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 
