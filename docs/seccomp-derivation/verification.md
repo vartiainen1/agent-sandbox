@@ -398,9 +398,9 @@ reduction refuses with the workload never executed.
 - **NATIVE VERIFIED**: fail-closed behavior and host-side logic only;
 the full rootless path remains NOT VERIFIED NATIVE (recorded reason).
 - **KNOWN LIMITATION (RESOLVED in Step 8)**: seccomp is now installed
-  and enforced (see the Step 8 record below); rlimits/cgroups (Step 9),
-  environment sanitization, output limits, timeout/cleanup remain
-  outstanding.
+  and enforced (see the Step 8 record below); rlimits now landed too
+  (Step 9 record below); cgroups v2 (Step 10), environment
+  sanitization, output limits, timeout/cleanup remain outstanding.
 
 ## Phase 1 Step 8 — seccomp filter installation results (2026-08-19)
 
@@ -551,3 +551,92 @@ the full rootless path remains NOT VERIFIED NATIVE (recorded reason).
   (Step 13) are not yet implemented — no_new_privs alone is the
   privilege-gain blocker today, and the complete privilege-reduction
   surface is not claimed until those land.
+
+## Phase 1 Step 9 — rlimits results (2026-08-19)
+
+Mechanism implemented (`agent_sandbox/isolation/resources.py`, per
+ADR-007 / ARCHITECTURE.md §9, S-012/S-027): the six mandated rlimits are
+lowered in sandbox PID 1 with soft == hard — RLIMIT_CPU (cpu_seconds),
+RLIMIT_AS (memory_mb bytes), RLIMIT_NPROC (processes), RLIMIT_NOFILE
+(open_files), RLIMIT_FSIZE (disk_mb bytes), RLIMIT_CORE=0 — and the
+KERNEL STATE is read back (getrlimit) and verified: every limit must
+read back (soft == hard == policy value). Never "the syscall returned
+success"; any set failure, unreadable limit, or unexpected value is
+REFUSAL (fail closed) — the workload fn never runs on an unverified
+resource state. Lowered hard limits can never be raised (S-027).
+
+### Ordering constraint (charter): seccomp is already installed
+
+Seccomp (Step 8) is installed BEFORE the rlimits in PID 1 — the mandated
+item order (13 then 14). glibc's setrlimit(2)/getrlimit(2) map to the
+prlimit64 syscall, which IS in the derived 45-syscall allowlist
+(syscall-classification.md) — so NO filter change and NO syscall
+addition was required. This is proven empirically: the sandbox-internal
+tests establish the rlimits under the ACTUAL runtime filter (DOCKER
+VERIFIED), and the workload-time read-back shows the limits in force
+alongside Seccomp: 2 and NoNewPrivs: 1 in one view. The seccomp
+regression gate still reports 45 (no expansion).
+
+### RESOURCES-stage shape (ADR-007)
+
+- rlimits are the always-applied half of the RESOURCES stage.
+- HARDENED additionally mandates cgroup v2 delegation (Step 10): until
+  that half is implemented, the RESOURCES probe establishes + verifies
+  the rlimits (proving the mechanism works) and then REFUSES HARDENED AT
+  the RESOURCES stage with the explicit reason — the refusal point does
+  not advance beyond RESOURCES while the stage is incomplete.
+- RESTRICTED's RESOURCES stage is rlimits only (ADR-007): the probe
+  returns OK and RESTRICTED advances to refuse at ENVIRONMENT.
+
+### Kernel-state/read-back evidence (DOCKER VERIFIED, uid 1001, real sandbox)
+
+- Workload-time read-back in PID 1 (one view): RLIMIT_CPU [300, 300],
+  RLIMIT_AS [4294967296, 4294967296], RLIMIT_NPROC [256, 256],
+  RLIMIT_NOFILE [4096, 4096], RLIMIT_FSIZE [10737418240, 10737418240],
+  RLIMIT_CORE [0, 0], Seccomp: 2, NoNewPrivs: 1.
+- Inheritance: the workload (a descendant of PID 1) reads back exactly
+  the applied limits.
+- S-027 / T-035 adversarial: an attempt to RAISE RLIMIT_NOFILE inside
+  the workload is DENIED (kernel rule — no CAP_SYS_RESOURCE, Step 7).
+- Failure paths: set-limit failure and read-back mismatch both REFUSE
+  with the workload never executed (marker-absent evidence).
+- Real chain: HARDENED refuses AT RESOURCES with the cgroup reason;
+  RESTRICTED completes RESOURCES and refuses at ENVIRONMENT.
+- 20/20 Step 9 tests + full suite 224 tests OK (2 pre-existing substrate
+  skips) container-validated.
+
+### Import-safety finding (logged before fixing, freebuff-errors.txt)
+
+CPython on Windows does NOT ship the `resource` module: an unguarded
+module-level `import resource` broke import-safety (8 ImportErrors in
+test discovery). Fixed with a guarded import (`_HAS_RESOURCE` flag;
+RLIMIT constants None; seams raise NamespaceSetupError) so the module
+stays import-safe on every platform and fails closed at call time. The
+host-side policy tests patch the constants with sentinels on non-Unix so
+the logic is tested identically everywhere.
+
+### Native ubuntu CI (authoritative) — substrate limitation unchanged
+
+| Check | 3.11 | 3.12 |
+|---|---|---|
+| rlimits real-path tests | SKIPPED (recorded reason: setgroups deny EACCES — rootless mapping cannot be established on the runner) | same |
+| host-side policy/apply/verify/fail-closed tests | PASS | PASS |
+| Skeleton / namespace / rootfs / procdev / network / privileges / seccomp regression | PASS | PASS |
+| Seccomp regression gate (45, no expansion) + behavioral probe | PASS | PASS |
+
+### Step 9 labels
+
+- **DESIGN INTENT** (ADR-007, S-012/S-027): six always-applied,
+  unprivileged, irreversible limits; HARDENED also mandates cgroup v2
+  (Step 10); RESTRICTED is rlimits only.
+- **DOCKER VERIFIED**: establishment under the installed filter +
+  read-back + inheritance + cannot-raise + all refusal paths, in the
+  real sandbox.
+- **NATIVE VERIFIED**: host-side logic (policy mapping, apply/verify
+  semantics, failure injection) and fail-closed behavior; the full
+  rootless path remains NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: cgroups v2 (Step 10) is the remaining half of
+  the RESOURCES stage — HARDENED still refuses AT RESOURCES until it
+  lands; RLIMIT_AS is per-process (total-tree memory needs the cgroup
+  memory.max); RLIMIT_FSIZE bounds single files (total disk needs
+  io.max + workspace pre-check) — both documented gaps per ADR-007.

@@ -622,9 +622,10 @@ class PrivilegesProbeTests(unittest.TestCase):
 class IntegrationTests(unittest.TestCase):
     @skip_unless_linux
     def test_hardened_refuses_at_resources_after_real_chain(self):
-        # Full real path: the NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES
-        # and SECCOMP probes all pass; HARDENED then refuses at RESOURCES
-        # (the next unimplemented stage) - fail closed, no execution.
+        # Full real path: the NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES,
+        # SECCOMP and RESOURCES (rlimits) probes all pass; HARDENED then
+        # refuses AT RESOURCES (the cgroup v2 half of the stage is Step
+        # 10, ADR-007) - fail closed, no execution.
         _require_fs(self)
         src = tempfile.mkdtemp(prefix="as-nnp-int-")
         self.addCleanup(shutil.rmtree, src, True)
@@ -634,8 +635,8 @@ class IntegrationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
-        self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertIn("no implementation", result.failure.reason)
+        self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
+        self.assertIn("cgroup v2", result.failure.reason)
 
     def test_privileges_guard_registered(self):
         # The PRIVILEGES stage guard is the real probe - registered by

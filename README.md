@@ -17,15 +17,17 @@ audited.
 |---|---|
 | Architecture + threat model (Phase 0) | **COMPLETE** — `ARCHITECTURE.md`, `THREAT_MODEL.md`, `SECURITY_SPEC.md`, `ADRs/` |
 | Seccomp syscall allowlist derivation (Phase 1 pre-task) | **COMPLETE, container-validated** — 45-syscall HARDENED allowlist, behaviorally verified |
-| Runtime implementation (Phase 1) | **IN PROGRESS (Step 5)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) + `/proc` isolation (`hidepid=2`), minimal `/dev` (six identity-verified bind-mounted nodes, ADR-015), `/sys` absence (Step 4) + network namespace deny-by-construction (only `lo` DOWN, no addresses/routes, no usable path — Step 5) implemented and tested; still no runnable sandbox/CLI |
+| Runtime implementation (Phase 1) | **IN PROGRESS (Step 9)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) + `/proc` isolation (`hidepid=2`), minimal `/dev` (six identity-verified bind-mounted nodes, ADR-015), `/sys` absence (Step 4) + network namespace deny-by-construction (only `lo` DOWN, no addresses/routes, no usable path — Step 5) + no_new_privs (Step 6) + full capability reduction (Step 7) + seccomp filter installation (Step 8) + rlimits (Step 9) implemented and tested; still no runnable sandbox/CLI |
 
 This repository currently contains the security design, the reproducible
 seccomp derivation tooling, and the first Phase 1 runtime mechanisms
-(Steps 1-5: skeleton, namespace isolation, filesystem boundary,
-`/proc`+`/dev`+`/sys` boundary, network deny-by-construction). **There
+(Steps 1-9: skeleton, namespace isolation, filesystem boundary,
+`/proc`+`/dev`+`/sys` boundary, network deny-by-construction, no_new_privs,
+capability reduction, seccomp installation, rlimits). **There
 is still no runnable sandbox**; HARDENED initialization honestly refuses
-at the first mechanism that is not yet implemented (currently
-`privileges`), so nothing here should be used to sandbox a workload.
+at the first mechanism that is not yet implemented (currently the
+cgroup v2 half of `resources` — Step 10), so nothing here should be used
+to sandbox a workload.
 Native Linux validation runs in CI and is authoritative over the
 Docker-based results (see `docs/seccomp-derivation/verification.md` for
 the exact labeling).
@@ -90,16 +92,22 @@ verifies both halves: legitimate workloads pass, and
   workload cannot bring its own loopback up); the derived 45-syscall
   default-deny seccomp filter is installed as the LAST Stage-A operation
   and verified by kernel-observable read-back + forbidden-syscall EPERM
-  enforcement, with fork/exec inheritance (Step 8, S-011 — the socket
-  class is syscall-denied at workload time); rlimits/cgroups,
+  enforcement, with fork/exec inheritance  (Step 8, S-011 — the socket
+  class is syscall-denied at workload time); the six mandated rlimits
+  (RLIMIT_CPU/AS/NPROC/NOFILE/FSIZE, CORE=0) are lowered (soft == hard)
+  in PID 1 AFTER the seccomp install (prlimit64 is allowlisted — no
+  filter change) and verified by kernel-state read-back, the workload
+  cannot raise them (S-027, Step 9, S-012); cgroups v2 (Step 10),
   environment sanitization, output limits, timeout/cleanup are not yet
-  (Steps 14+).
+  (Steps 15+). HARDENED still refuses AT the `resources` stage until the
+  cgroup half lands; RESTRICTED (rlimits only, ADR-007) advances past
+  it.
 
 ## Validation labeling
 
 | Substrate | Status | Purpose |
 |---|---|---|
-| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests + proc/dev/sys boundary tests + network deny-by-construction tests + no_new_privs/capability-reduction/seccomp tests | Security claims |
+| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests + proc/dev/sys boundary tests + network deny-by-construction tests + no_new_privs/capability-reduction/seccomp tests + rlimits tests | Security claims |
 | Docker Desktop (container) | Development / reproducible observation; **only substrate where the full rootless mapping + rootfs/pivot_root + proc/dev/sys + network boundary is currently exercised** (uid 1001) | Iteration on Windows; never labeled as native |
 
 **Known native limitation (documented, not hidden)**: the GitHub-hosted

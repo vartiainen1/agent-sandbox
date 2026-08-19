@@ -54,6 +54,9 @@ jobs:
       - name: no_new_privs tests (kernel-state read-back, ordering, fail-closed - authoritative)
         run: python -m unittest tests.unit.test_privileges -v
 
+      - name: rlimits tests (six limits, read-back, seccomp interaction, inheritance - authoritative)
+        run: python -m unittest tests.unit.test_resources -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 

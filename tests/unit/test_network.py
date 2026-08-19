@@ -695,8 +695,10 @@ class IntegrationTests(unittest.TestCase):
     @skip_unless_linux
     def test_network_probe_ok_and_hardened_refuses_at_resources(self):
         # Full real path: namespaces + filesystem + network + no_new_privs
-        # + capability reduction + seccomp boundary verified, then HARDENED
-        # refuses at RESOURCES (the next unimplemented stage).
+        # + capability reduction + seccomp + rlimits boundary verified,
+        # then HARDENED refuses AT RESOURCES (the cgroup v2 half of the
+        # stage is Step 10, ADR-007) - the refusal point stays at
+        # RESOURCES while the stage is incomplete.
         ok, reason = _fs_available()
         if not ok:
             self.skipTest("filesystem boundary substrate unavailable: " + reason)
@@ -710,8 +712,8 @@ class IntegrationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.stage, InitStage.RESOURCES)
-        self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertIn("no implementation", result.failure.reason)
+        self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
+        self.assertIn("cgroup v2", result.failure.reason)
 
     @skip_unless_linux
     def test_probe_reason_covers_network(self):
