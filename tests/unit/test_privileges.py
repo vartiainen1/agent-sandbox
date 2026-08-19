@@ -330,9 +330,19 @@ class NoNewPrivsBoundaryTests(unittest.TestCase):
     def test_no_new_privs_established_and_readback(self):
         # The raw kernel read-back from inside the sandbox (PID 1): the
         # bit must be set there, not merely "the prctl set call returned".
+        # At workload time the bit is read from the NoNewPrivs status
+        # field (prctl(2) itself is denied by the Step 8 filter); the
+        # prctl PR_GET read-back is verified by the probe, which runs it
+        # before the filter is installed.
+        def _nnp(st):
+            for line in st.splitlines():
+                if line.startswith("NoNewPrivs:"):
+                    return int(line.split(":", 1)[1].strip())
+            return -1
+
         def fn(state):
             return json.dumps({
-                "readback": priv_mod._prctl(priv_mod.PR_GET_NO_NEW_PRIVS),
+                "readback": _nnp(priv_mod._read_proc_status()),
                 "uid": syscalls.getuid(),
                 "pid": syscalls.getpid(),
             })
@@ -436,12 +446,21 @@ class CapabilityReductionBoundaryTests(unittest.TestCase):
     def test_capability_reduction_verified_inside_sandbox(self):
         # At workload time (after the full PID-1 chain) every capability
         # set must read back zero AND no_new_privs must still be set -
-        # the Step 6+7 ordering evidence in one view.
+        # the Step 6+7 ordering evidence in one view. (no_new_privs is
+        # read from the NoNewPrivs status field: prctl(2) itself is
+        # denied by the Step 8 seccomp filter at workload time.)
+        def _field(st, name):
+            prefix = name + ":"
+            for line in st.splitlines():
+                if line.startswith(prefix):
+                    return int(line.split(":", 1)[1].strip())
+            return -1
+
         def fn(state):
             st = priv_mod._read_proc_status()
             fields = {f: priv_mod._parse_cap_field(st, f)
                       for f in priv_mod._CAP_STATUS_FIELDS}
-            fields["nnp"] = priv_mod._prctl(priv_mod.PR_GET_NO_NEW_PRIVS)
+            fields["nnp"] = _field(st, "NoNewPrivs")
             return json.dumps(fields)
 
         run = setup.run_in_sandbox(fn)
@@ -602,9 +621,9 @@ class PrivilegesProbeTests(unittest.TestCase):
 
 class IntegrationTests(unittest.TestCase):
     @skip_unless_linux
-    def test_hardened_refuses_at_seccomp_after_real_chain(self):
-        # Full real path: the NAMESPACES, FILESYSTEM, NETWORK and
-        # PRIVILEGES probes all pass; HARDENED then refuses at SECCOMP
+    def test_hardened_refuses_at_resources_after_real_chain(self):
+        # Full real path: the NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES
+        # and SECCOMP probes all pass; HARDENED then refuses at RESOURCES
         # (the next unimplemented stage) - fail closed, no execution.
         _require_fs(self)
         src = tempfile.mkdtemp(prefix="as-nnp-int-")
@@ -614,7 +633,7 @@ class IntegrationTests(unittest.TestCase):
         with unittest.mock.patch.object(init_mod, "_is_linux", return_value=True):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
         self.assertIn("no implementation", result.failure.reason)
 

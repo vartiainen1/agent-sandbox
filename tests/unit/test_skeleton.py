@@ -161,8 +161,13 @@ class InitializationTests(unittest.TestCase):
             setup_mod, "_privileges_probe_impl",
             return_value=StageCheck(ok=True, reason="privileges probe ok (test)"))
         self._patch_priv.start()
+        self._patch_sc = unittest.mock.patch.object(
+            setup_mod, "_seccomp_probe_impl",
+            return_value=StageCheck(ok=True, reason="seccomp probe ok (test)"))
+        self._patch_sc.start()
 
     def tearDown(self):
+        self._patch_sc.stop()
         self._patch_priv.stop()
         self._patch_net.stop()
         self._patch_fs.stop()
@@ -177,17 +182,17 @@ class InitializationTests(unittest.TestCase):
             return_value=StageCheck(ok=ok, reason=reason, code=code))
 
     def test_hardened_init_refuses_at_next_unimplemented_stage(self):
-        # Step 6: NAMESPACES, FILESYSTEM, NETWORK and PRIVILEGES guards
-        # are registered and pass; HARDENED then refuses at SECCOMP (the
-        # next mandatory stage, not yet implemented) - fail closed, never
-        # skip.
+        # Step 7: NAMESPACES, FILESYSTEM, NETWORK, PRIVILEGES and SECCOMP
+        # guards are registered and pass; HARDENED then refuses at
+        # RESOURCES (the next mandatory stage, not yet implemented) - fail
+        # closed, never skip.
         cfg = RuntimeConfig.from_dict(valid_config(mode="hardened"))
         with self._patch_probe(True, reason="probe ok (test)"):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertIs(result.mode, SecurityMode.HARDENED)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertIn("no implementation", result.failure.reason)
 
     def test_hardened_init_refuses_when_namespace_probe_fails(self):
@@ -221,7 +226,7 @@ class InitializationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
-        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
 
     def test_platform_fail_closed_on_non_linux(self):
         cfg = RuntimeConfig.from_dict(valid_config(mode="compatibility"))
@@ -237,8 +242,8 @@ class InitializationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertIsInstance(result, InitResult)
         self.assertTrue(result.describe().startswith("initialization REFUSED"))
-        self.assertIn("seccomp", result.describe())
-        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
+        self.assertIn("resources", result.describe())
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertIsNotNone(result.failure.reason)
 
     def test_no_silent_downgrade(self):
@@ -251,7 +256,7 @@ class InitializationTests(unittest.TestCase):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
         self.assertIs(result.mode, SecurityMode.HARDENED)
-        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
 
     def test_stage_order_is_deterministic(self):
         seq = init_sequence(SecurityMode.HARDENED)
@@ -265,22 +270,24 @@ class InitializationTests(unittest.TestCase):
                          (InitStage.CONFIG_VALIDATED, InitStage.PLATFORM_LINUX,
                           InitStage.READY))
 
-    def test_only_steps_2_to_6_stages_registered(self):
-        # Pins the honest Step 6 state: exactly NAMESPACES, FILESYSTEM,
-        # NETWORK and PRIVILEGES are implemented (registered by
-        # isolation/setup). Stages 7+ (SECCOMP..EXECUTION) remain
+    def test_only_steps_2_to_7_stages_registered(self):
+        # Pins the honest Step 7 state: exactly NAMESPACES, FILESYSTEM,
+        # NETWORK, PRIVILEGES and SECCOMP are implemented (registered by
+        # isolation/setup). Stages 8+ (RESOURCES..EXECUTION) remain
         # unregistered, so HARDENED refuses at the first missing one
         # instead of pretending the boundary is complete.
         self.assertIn(InitStage.NAMESPACES, init_mod._STAGE_GUARDS)
         self.assertIn(InitStage.FILESYSTEM, init_mod._STAGE_GUARDS)
         self.assertIn(InitStage.NETWORK, init_mod._STAGE_GUARDS)
         self.assertIn(InitStage.PRIVILEGES, init_mod._STAGE_GUARDS)
+        self.assertIn(InitStage.SECCOMP, init_mod._STAGE_GUARDS)
         for stage in init_mod.MECHANISM_STAGES:
             if stage in (InitStage.NAMESPACES, InitStage.FILESYSTEM,
-                         InitStage.NETWORK, InitStage.PRIVILEGES):
+                         InitStage.NETWORK, InitStage.PRIVILEGES,
+                         InitStage.SECCOMP):
                 continue
             self.assertNotIn(stage, init_mod._STAGE_GUARDS,
-                             f"{stage.value} must not be implemented in Step 6")
+                             f"{stage.value} must not be implemented in Step 7")
 
     def test_duplicate_stage_guard_registration_raises(self):
         # Registering a guard for an already-registered stage must raise
@@ -292,10 +299,10 @@ class InitializationTests(unittest.TestCase):
                                           lambda c: None)
         self.assertIn(InitStage.CONFIG_VALIDATED, init_mod._STAGE_GUARDS)
         # Registry unpolluted by the failed duplicate: the mechanism guards
-        # are exactly the Step 6 set (NAMESPACES, FILESYSTEM, NETWORK,
-        # PRIVILEGES) and SECCOMP is still unregistered.
+        # are exactly the Step 7 set (NAMESPACES, FILESYSTEM, NETWORK,
+        # PRIVILEGES, SECCOMP) and RESOURCES is still unregistered.
         self.assertIn(InitStage.NETWORK, init_mod._STAGE_GUARDS)
-        self.assertNotIn(InitStage.SECCOMP, init_mod._STAGE_GUARDS)
+        self.assertNotIn(InitStage.RESOURCES, init_mod._STAGE_GUARDS)
 
 
 class SessionGateTests(unittest.TestCase):

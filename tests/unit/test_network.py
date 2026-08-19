@@ -11,17 +11,20 @@ Categories (kept separate, per the charter):
   recorded reason; Docker uid 1001: VERIFIED DOCKER).
 - Failure-mode tests: every unexpected network state must REFUSE.
 
-Empirical facts this suite pins (Step 5 probe, container):
+Empirical facts this suite pins:
 - The fresh netns is deny-by-construction: only lo (DOWN, no addresses),
-  no IPv4 routes, no host interfaces; connect() -> ENETUNREACH.
-- Since Step 7 (capability reduction, PRIVILEGES stage), the workload
-  CANNOT toggle lo: CAP_NET_ADMIN is removed from the sandbox's
-  effective/permitted sets and bounding set, so the ioctl lo-up attempt
-  FAILS (EPERM) and lo stays DOWN - the Step 5 documented residual
-  ("workload can toggle its own lo via ns-local CAP_NET_ADMIN until Step
-  12") is RESOLVED here. The suite asserts the attempt fails and the
-  deny-by-construction state holds (no usable path, no host escape);
-  seccomp (Step 13) remains outstanding for the syscall layer.
+  no IPv4 routes, no host interfaces - verified in sandbox PID 1 BEFORE
+  the seccomp install (Step 5 evidence; the run_in_sandbox verification
+  refuses on any deviation).
+- Step 7 (capability reduction) removed CAP_NET_ADMIN: the workload
+  cannot toggle lo.
+- Step 8 (seccomp) denies the ENTIRE socket syscall class at workload
+  time: no network syscall is even possible - socket() fails EPERM. The
+  suite therefore asserts the syscall-level denial plus the structural
+  property (no usable path, no host escape); the netns state itself is
+  verified pre-filter in PID 1. (The Step 5-era ioctl flag reads are no
+  longer possible at workload time - ioctl needs a socket fd, and
+  socket creation is denied.)
 - The workload cannot reach the host netns (no host pid visible -> no
   host ns fd path; setns/iface-move need initial-userns privileges).
 - Netlink route/iface mutations returned EOPNOTSUPP in the validation
@@ -145,14 +148,18 @@ def _bring_lo_up_inside() -> str:
 
 
 def _try_connect_inside(host: str, port: int) -> str:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # The socket creation is INSIDE the try: under the Step 8 seccomp
+    # filter the socket syscall itself fails with EPERM, and that failure
+    # must be recorded (not raised).
     try:
-        s.connect((host, port))
-        return "OK"
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.connect((host, port))
+            return "OK"
+        finally:
+            s.close()
     except OSError as e:
         return f"errno:{e.errno}"
-    finally:
-        s.close()
 
 
 class ParsingTests(unittest.TestCase):
@@ -199,13 +206,29 @@ class NetworkBoundaryTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.rootfs.layout.dir, True)
 
     @skip_unless_linux
-    def test_loopback_is_down(self):
+    def test_network_denied_at_syscall_level(self):
+        # Step 8: seccomp denies the socket syscall class, so at workload
+        # time no network operation is even possible - socket() fails
+        # EPERM (the syscall-level layer over the deny-by-construction
+        # netns, whose state - only lo DOWN, no addresses/routes - is
+        # verified in PID 1 before the filter install and refuses
+        # otherwise). The lo flag-toggle residual is doubly closed: no
+        # CAP_NET_ADMIN (Step 7) and no socket fd to reach ioctl (Step 8).
         def fn(state, fs):
-            return json.dumps({"flags": _lo_flags_inside(),
-                               "up": bool(_lo_flags_inside() & IFF_UP)})
+            results = {}
+            for host in ("8.8.8.8", "127.0.0.1", "169.254.169.254"):
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.close()
+                    results[f"socket_{host}"] = "OK"
+                except OSError as e:
+                    results[f"socket_{host}"] = f"errno:{e.errno}"
+            return json.dumps(results)
 
         data = json.loads(_run(fn, self.rootfs))
-        self.assertFalse(data["up"], f"lo must be DOWN (flags {data['flags']})")
+        for label, value in data.items():
+            self.assertEqual(value, "errno:1",
+                             f"{label} must fail EPERM (socket syscall denied)")
 
     @skip_unless_linux
     def test_no_non_loopback_interfaces(self):
@@ -233,20 +256,21 @@ class NetworkBoundaryTests(unittest.TestCase):
     @skip_unless_linux
     def test_no_routes(self):
         # No IPv4 routes; IPv6 routes (fresh-netns ::/0 dev lo entries on
-        # some kernels) reference ONLY the DOWN loopback - nothing usable.
+        # some kernels) reference ONLY the loopback - nothing usable. (The
+        # lo link state itself is verified in PID 1 before the filter;
+        # reading flags at workload time needs a socket fd, which seccomp
+        # denies - Step 8.)
         def fn(state, fs):
             route = net_mod._read_proc_net("route")
             ipv6 = net_mod._read_proc_net("ipv6_route")
             v4 = [l for l in route.splitlines() if l.strip() and not l.startswith("Iface")]
             devices = net_mod._parse_route_devices(ipv6)
-            return json.dumps({"v4_routes": len(v4), "v6_devices": devices,
-                               "lo_down": not bool(_lo_flags_inside() & IFF_UP)})
+            return json.dumps({"v4_routes": len(v4), "v6_devices": devices})
 
         data = json.loads(_run(fn, self.rootfs))
         self.assertEqual(data["v4_routes"], 0, "IPv4 route table must be empty")
         self.assertEqual(set(data["v6_devices"]), {"lo"},
                          "IPv6 routes must reference only lo")
-        self.assertTrue(data["lo_down"], "lo must be DOWN so no route is usable")
 
     @skip_unless_linux
     def test_no_default_route(self):
@@ -270,50 +294,38 @@ class NetworkBoundaryTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_socket_network_path_unusable(self):
-        # socket() and even bind() may succeed (creation is
-        # namespace-independent and the kernel does not validate bind
-        # addresses against the empty address table here - recorded
-        # honestly, not asserted); the PATH must be unusable: every
-        # connect fails ENETUNREACH (no route) and a bound listener is
-        # unreachable from any source. "No usable network path" is the
-        # acceptance criterion - bind() succeeding is inert.
+        # Step 8: the socket syscall class is denied, so no socket can
+        # even be created - the strongest "no usable network path" form
+        # (syscall-level, over the deny-by-construction netns). connect,
+        # bind, listen are unreachable because they are unreachable
+        # syscalls; a listener is impossible because creation is denied.
         def fn(state, fs):
             results = {}
             for host in ("8.8.8.8", "127.0.0.1", "169.254.169.254"):
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.connect((host, 443))
                     results[f"connect_{host}"] = "OK"
+                    s.close()
                 except OSError as e:
                     results[f"connect_{host}"] = f"errno:{e.errno}"
-                s.close()
-            # A listener in the netns is unreachable even from the same
-            # netns (lo DOWN, no route) - no service can be reached.
-            ln = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
+                ln = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 ln.bind(("127.0.0.1", 0))
                 ln.listen(1)
-                port = ln.getsockname()[1]
-                c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                try:
-                    c.connect(("127.0.0.1", port))
-                    results["listen_reachable"] = "OK"
-                except OSError as e:
-                    results["listen_reachable"] = f"errno:{e.errno}"
-                c.close()
-            except OSError as e:
-                results["listen_setup"] = f"errno:{e.errno}"
-            finally:
                 ln.close()
+                results["listener"] = "OK"
+            except OSError as e:
+                results["listener"] = f"errno:{e.errno}"
             return json.dumps(results)
 
         data = json.loads(_run(fn, self.rootfs))
         for host in ("8.8.8.8", "127.0.0.1", "169.254.169.254"):
-            self.assertEqual(data[f"connect_{host}"], "errno:101",
-                             f"connect to {host} must fail ENETUNREACH "
-                             "(no usable network path)")
-        self.assertEqual(data["listen_reachable"], "errno:101",
-                         "no listener may be reachable (no route)")
+            self.assertEqual(data[f"connect_{host}"], "errno:1",
+                             f"connect to {host} must fail EPERM (socket "
+                             "syscall denied - no usable network path)")
+        self.assertEqual(data["listener"], "errno:1",
+                         "a listener is impossible (socket syscall denied)")
 
     @skip_unless_linux
     def test_connect_refused_or_unavailable(self):
@@ -324,10 +336,12 @@ class NetworkBoundaryTests(unittest.TestCase):
             })
 
         data = json.loads(_run(fn, self.rootfs))
-        self.assertEqual(data["public"], "errno:101",
-                         "public connect must fail ENETUNREACH")
-        self.assertEqual(data["loopback"], "errno:101",
-                         "loopback connect must fail ENETUNREACH (lo DOWN)")
+        self.assertEqual(data["public"], "errno:1",
+                         "public connect must fail EPERM (socket syscall "
+                         "denied - no usable network path)")
+        self.assertEqual(data["loopback"], "errno:1",
+                         "loopback connect must fail EPERM (socket syscall "
+                         "denied - no usable network path)")
 
     @skip_unless_linux
     def test_host_network_namespace_unchanged(self):
@@ -352,12 +366,12 @@ class NetworkBoundaryTests(unittest.TestCase):
 
 
 class WorkloadReenableTests(unittest.TestCase):
-    """The workload cannot re-enable networking: since Step 7 the
-    capability reduction has removed CAP_NET_ADMIN, so even the lo
-    flag-toggle FAILS and lo stays DOWN; the structural property (no
-    usable path, no host escape) holds on every substrate. (The tests
-    assert the security boundary, never the environment's EOPNOTSUPP
-    artifact.)"""
+    """The workload cannot re-enable networking: Step 7 removed
+    CAP_NET_ADMIN (no lo toggle) and Step 8's seccomp filter denies the
+    entire socket syscall class (no network syscall is even possible).
+    The structural property (no usable path, no host escape) holds on
+    every substrate. (The tests assert the security boundary, never the
+    environment's EOPNOTSUPP artifact.)"""
 
     def setUp(self):
         _require_fs(self)
@@ -368,28 +382,26 @@ class WorkloadReenableTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_workload_cannot_enable_loopback(self):
-        # Step 7 (capability reduction) removed CAP_NET_ADMIN: the lo-up
-        # attempt now FAILS (EPERM) and lo stays DOWN - the Step 5
-        # documented residual is resolved. Every non-loopback connect
-        # still fails ENETUNREACH and the host netns stays unreachable.
+        # Step 7 removed CAP_NET_ADMIN and Step 8's filter denies the
+        # socket syscall class: the lo-up attempt cannot even obtain a
+        # socket fd (EPERM at socket()) - the lo-toggle residual is doubly
+        # closed. Every connect attempt fails EPERM (syscall denied).
         def fn(state, fs):
             attempt = _bring_lo_up_inside()
             return json.dumps({
                 "attempt": attempt,
-                "lo_up": bool(_lo_flags_inside() & IFF_UP),
                 "connect_public": _try_connect_inside("8.8.8.8", 443),
                 "connect_metadata": _try_connect_inside("169.254.169.254", 80),
                 "connect_host_gw": _try_connect_inside("192.168.1.1", 80),
             })
 
         data = json.loads(_run(fn, self.rootfs))
-        self.assertNotEqual(data["attempt"], "OK",
-                            "lo-up must fail after the Step 7 capability drop")
-        self.assertFalse(data["lo_up"], "lo must stay DOWN after the attempt")
+        self.assertEqual(data["attempt"], "errno:1",
+                         "lo-up must fail EPERM (no socket fd under seccomp)")
         for label in ("connect_public", "connect_metadata", "connect_host_gw"):
-            self.assertEqual(data[label], "errno:101",
-                             f"{label} must fail ENETUNREACH after the "
-                             f"workload's lo-up attempt ({data['attempt']})")
+            self.assertEqual(data[label], "errno:1",
+                             f"{label} must fail EPERM (socket syscall "
+                             "denied) after the workload's lo-up attempt")
 
     @skip_unless_linux
     def test_workload_cannot_add_route(self):
@@ -412,8 +424,8 @@ class WorkloadReenableTests(unittest.TestCase):
         data = json.loads(_run(fn, self.rootfs))
         self.assertEqual(data["v4_routes"], 0,
                          "no usable IPv4 route may exist after the attempt")
-        self.assertEqual(data["connect"], "errno:101",
-                         "connect must still fail ENETUNREACH")
+        self.assertEqual(data["connect"], "errno:1",
+                         "connect must still fail EPERM (socket syscall denied)")
 
     @skip_unless_linux
     def test_workload_cannot_create_interface(self):
@@ -456,25 +468,23 @@ class WorkloadReenableTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_loopback_up_attempt_keeps_deny_by_construction(self):
-        # Step 7 resolved the lo-toggle residual: without CAP_NET_ADMIN the
-        # workload cannot bring lo UP, so the deny-by-construction state is
-        # now enforced by the capability drop itself (plus the netns).
+        # Step 7 + Step 8: without CAP_NET_ADMIN and without the socket
+        # syscall, the workload cannot bring lo UP - the deny-by-
+        # construction state is enforced by the capability drop AND the
+        # seccomp filter (plus the netns).
         def fn(state, fs):
             attempt = _bring_lo_up_inside()
             return json.dumps({
                 "attempt": attempt,
-                "lo_up": bool(_lo_flags_inside() & IFF_UP),
                 "public": _try_connect_inside("8.8.8.8", 443),
                 "host_gw": _try_connect_inside("172.16.0.1", 80),
             })
 
         data = json.loads(_run(fn, self.rootfs))
-        self.assertNotEqual(data["attempt"], "OK",
-                            "lo-up must fail after the Step 7 capability drop")
-        self.assertFalse(data["lo_up"],
-                         "lo must remain DOWN after the attempt")
-        self.assertEqual(data["public"], "errno:101")
-        self.assertEqual(data["host_gw"], "errno:101")
+        self.assertEqual(data["attempt"], "errno:1",
+                         "lo-up must fail EPERM (no socket fd under seccomp)")
+        self.assertEqual(data["public"], "errno:1")
+        self.assertEqual(data["host_gw"], "errno:1")
 
 
 def _netlink_add_route_inside() -> str:
@@ -683,10 +693,10 @@ class FailureModeTests(unittest.TestCase):
 
 class IntegrationTests(unittest.TestCase):
     @skip_unless_linux
-    def test_network_probe_ok_and_hardened_refuses_at_seccomp(self):
+    def test_network_probe_ok_and_hardened_refuses_at_resources(self):
         # Full real path: namespaces + filesystem + network + no_new_privs
-        # boundary verified, then HARDENED refuses at SECCOMP (the next
-        # unimplemented stage).
+        # + capability reduction + seccomp boundary verified, then HARDENED
+        # refuses at RESOURCES (the next unimplemented stage).
         ok, reason = _fs_available()
         if not ok:
             self.skipTest("filesystem boundary substrate unavailable: " + reason)
@@ -699,7 +709,7 @@ class IntegrationTests(unittest.TestCase):
         with unittest.mock.patch.object(init_mod, "_is_linux", return_value=True):
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
         self.assertIn("no implementation", result.failure.reason)
 
