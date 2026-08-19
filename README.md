@@ -17,17 +17,17 @@ audited.
 |---|---|
 | Architecture + threat model (Phase 0) | **COMPLETE** — `ARCHITECTURE.md`, `THREAT_MODEL.md`, `SECURITY_SPEC.md`, `ADRs/` |
 | Seccomp syscall allowlist derivation (Phase 1 pre-task) | **COMPLETE, container-validated** — 45-syscall HARDENED allowlist, behaviorally verified |
-| Runtime implementation (Phase 1) | **IN PROGRESS (Step 3)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) implemented and tested; still no runnable sandbox/CLI |
+| Runtime implementation (Phase 1) | **IN PROGRESS (Step 4)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) + `/proc` isolation (`hidepid=2`), minimal `/dev` (six identity-verified bind-mounted nodes, ADR-015), and `/sys` absence (Step 4) implemented and tested; still no runnable sandbox/CLI |
 
 This repository currently contains the security design, the reproducible
 seccomp derivation tooling, and the first Phase 1 runtime mechanisms
 (Step 1 skeleton, Step 2 namespace isolation, Step 3 filesystem
-boundary). **There is still no runnable sandbox**; HARDENED
-initialization honestly refuses at the first mechanism that is not yet
-implemented (currently `network`), so nothing here should be used to
-sandbox a workload. Native Linux validation runs in CI and is
-authoritative over the Docker-based results (see
-`docs/seccomp-derivation/verification.md` for the exact labeling).
+boundary, Step 4 `/proc`+`/dev`+`/sys` boundary). **There is still no
+runnable sandbox**; HARDENED initialization honestly refuses at the
+first mechanism that is not yet implemented (currently `network`), so
+nothing here should be used to sandbox a workload. Native Linux
+validation runs in CI and is authoritative over the Docker-based results
+(see `docs/seccomp-derivation/verification.md` for the exact labeling).
 
 ## Security model (the short version)
 
@@ -73,18 +73,20 @@ verifies both halves: legitimate workloads pass, and
 - Change control: `docs/seccomp-derivation/policy.md` §5
 - Known limitations: threads (`clone`) and networking syscalls are denied
   by design in v0.1; the allowlist is x86_64/glibc-specific. The rootless
-  namespace foundation (uid 0→caller mapping) is validated (Step 2) and
-  the rootfs/`pivot_root` filesystem boundary is validated (Step 3, both
-  container-validated; native rootless mapping remains blocked by the
-  runner's AppArmor restriction); privileges, seccomp, resources are not
-  yet (Steps 11+).
+  namespace foundation (uid 0→caller mapping) is validated (Step 2), the
+  rootfs/`pivot_root` filesystem boundary is validated (Step 3), and the
+  `/proc` (`hidepid=2`) + minimal `/dev` + `/sys`-absence boundary is
+  validated (Step 4) — all container-validated (uid 1001); native
+  rootless mapping remains blocked by the runner's AppArmor restriction.
+  Device nodes are six identity-verified host bind-mounts (ADR-015);
+  privileges, no_new_privs, seccomp, resources are not yet (Steps 11+).
 
 ## Validation labeling
 
 | Substrate | Status | Purpose |
 |---|---|---|
-| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests | Security claims |
-| Docker Desktop (container) | Development / reproducible observation; **only substrate where the full rootless mapping + rootfs/pivot_root boundary is currently exercised** (uid 1001) | Iteration on Windows; never labeled as native |
+| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests + proc/dev/sys boundary tests | Security claims |
+| Docker Desktop (container) | Development / reproducible observation; **only substrate where the full rootless mapping + rootfs/pivot_root + proc/dev/sys boundary is currently exercised** (uid 1001) | Iteration on Windows; never labeled as native |
 
 **Known native limitation (documented, not hidden)**: the GitHub-hosted
 ubuntu-24.04 runner permits unprivileged `unshare(CLONE_NEWUSER)` but its

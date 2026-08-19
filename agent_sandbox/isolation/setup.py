@@ -18,13 +18,15 @@ itself join the new PID namespace - only its children do (namespaces.py
 docstring). Child B is therefore the first process in the new PID
 namespace and is PID 1 there (ADR-004).
 
-Step 3 (filesystem boundary): when a rootfs is supplied, child A ALSO
+Step 3-4 (filesystem boundary): when a rootfs is supplied, child A ALSO
 establishes the filesystem boundary before forking - private mount
 propagation, the rootfs tree bind-mounted into a mount point, a
-size-limited tmpfs at /tmp, pivot_root into the rootfs, and detachment of
-the old root (filesystem.py). PID 1 then runs the workload inside the new
-root; a failed or unverifiable boundary aborts BEFORE the workload fn runs
-(fail closed).
+size-limited tmpfs at /tmp, pivot_root into the rootfs, detachment of the
+old root, and the minimal /dev tmpfs with its exact 6 device nodes
+(filesystem.py). PID 1 then mounts the sandbox proc view (/proc with
+hidepid=2 - only PID 1 can mount a procfs showing the sandbox's own
+processes) and runs the workload inside the new root; a failed or
+unverifiable boundary aborts BEFORE the workload fn runs (fail closed).
 
 The supervisor NEVER enters the namespaces or the new root: it must keep
 its host view (cleanup, audit, timeout - later steps). The NAMESPACES and
@@ -121,6 +123,17 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
             os.dup2(out_w, 1)
             os.dup2(out_w, 2)
             os.close(out_w)
+            # PID 1 mounts + verifies the sandbox proc view (/proc with
+            # hidepid=2). A procfs mount shows the PID namespace of the
+            # process that mounts it, so only PID 1 can show the sandbox's
+            # own processes (filesystem.py docstring). Failure = refusal.
+            try:
+                if fs_state is not None:
+                    _mount_and_verify_proc()
+            except BaseException as e:  # noqa: BLE001
+                print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
+                sys.stderr.flush()
+                os._exit(1)
             try:
                 if fs_state is None:
                     result = fn(state)
@@ -237,11 +250,27 @@ def _namespaces_guard(config) -> StageCheck:
     return namespace_probe()
 
 
+def _mount_and_verify_proc() -> None:
+    """PID-1-side: mount procfs (hidepid=2) and verify the sandbox proc
+    view. Raises NamespaceSetupError on verification failure - the caller
+    (run_in_sandbox PID 1) reports it and refuses; never a silent
+    continue with a partially configured filesystem."""
+    problems = fs_mod.mount_sandbox_proc()
+    if problems:
+        raise NamespaceSetupError(
+            "proc/dev/sys boundary verification failed: " + "; ".join(problems))
+
+
 def _fs_pid1_verification(state: NamespaceState,
                           fs: fs_mod.FilesystemState) -> str:
     """PID-1-side verification of the filesystem boundary (runs inside the
-    new root). Returns "OK" or "FAIL <detail>" - never a silent pass."""
+    new root, after the sandbox proc view is mounted). Returns "OK" or
+    "FAIL <detail>" - never a silent pass."""
     problems: list[str] = []
+    try:
+        problems.extend(fs_mod.mount_sandbox_proc())
+    except BaseException as e:  # noqa: BLE001 - mount failure is a refusal
+        problems.append(f"proc mount failed: {type(e).__name__}: {e}")
     cur = os.stat("/")
     if (cur.st_dev, cur.st_ino) != fs.root_identity:
         problems.append(
@@ -250,7 +279,7 @@ def _fs_pid1_verification(state: NamespaceState,
         problems.append(f"cwd is {os.getcwd()!r}, expected /")
     if not os.path.isdir("/workspace"):
         problems.append("/workspace missing in PID 1")
-    hits = fs_mod._probe_absent(fs_mod.MANDATORY_ABSENT_PATHS)
+    hits = fs_mod._probe_absent(fs_mod.HOST_ABSENT_PATHS)
     if hits:
         problems.append("host path(s) reachable in PID 1: " + ", ".join(hits))
     if problems:
@@ -316,8 +345,9 @@ def _filesystem_probe_impl(config) -> StageCheck:
         return StageCheck(
             ok=True,
             reason="minimal rootfs + workspace copy + pivot_root + old-root "
-                   "detach + private mount propagation established and "
-                   "verified in a real forked child")
+                   "detach + private mount propagation + /proc (hidepid=2) "
+                   "+ minimal /dev established and verified in a real forked "
+                   "child")
     return StageCheck(
         ok=False, code=InitFailureCode.STAGE_FAILED,
         reason=msg or f"filesystem probe child failed (status {status}) - "

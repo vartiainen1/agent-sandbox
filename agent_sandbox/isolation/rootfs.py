@@ -30,9 +30,10 @@ from dataclasses import dataclass
 from agent_sandbox.isolation.errors import NamespaceSetupError
 
 # Rootfs layout directories. Logical name -> relative path inside the tree.
-# usr/bin/lib/etc exist as empty placeholders in Step 3 (system layers are
-# provisioned later); proc/dev/sys are ABSENT (deferred to later steps -
-# absence is the safest state).
+# usr/bin/lib/etc exist as empty placeholders (system layers are provisioned
+# later); proc/dev are empty MOUNT POINTS (Step 4 mounts procfs + a minimal
+# device tmpfs over them inside the sandbox); sys is NOT created - absence
+# is the v0.1 /sys mechanism (ADR-005).
 LAYOUT_DIRS = {
     "workspace": "workspace",
     "tmp": "tmp",
@@ -41,6 +42,8 @@ LAYOUT_DIRS = {
     "bin": "bin",
     "lib": "lib",
     "etc": "etc",
+    "proc": "proc",
+    "dev": "dev",
 }
 
 
@@ -56,6 +59,7 @@ class RootfsLayout:
     bin: str
     lib: str
     etc: str
+    dev: str
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,7 @@ def build_rootfs(source_workspace: str) -> RootfsState:
             bin=os.path.join(root, "bin"),
             lib=os.path.join(root, "lib"),
             etc=os.path.join(root, "etc"),
+            dev=os.path.join(root, "dev"),
         )
         for rel in LAYOUT_DIRS.values():
             os.makedirs(os.path.join(root, rel), exist_ok=True)
