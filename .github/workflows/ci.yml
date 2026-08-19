@@ -48,6 +48,9 @@ jobs:
       - name: Proc/dev/sys boundary tests (/proc hidepid=2, minimal /dev, /sys absence - authoritative)
         run: python -m unittest tests.unit.test_procdev -v
 
+      - name: Network deny-by-construction tests (netns state, no usable path - authoritative)
+        run: python -m unittest tests.unit.test_network -v
+
       - name: Unit + regression tests (artifact integrity, gate, BPF layout, fail-closed guard)
         run: python3 tools/seccomp-derivation/test_derivation.py
 

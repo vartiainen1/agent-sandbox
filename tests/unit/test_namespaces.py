@@ -381,12 +381,12 @@ class FailureModeTests(unittest.TestCase):
 
 class ProbeIntegrationTests(unittest.TestCase):
     @skip_unless_linux
-    def test_namespace_probe_ok_and_hardened_refuses_at_network(self):
+    def test_namespace_probe_ok_and_hardened_refuses_at_privileges(self):
         # The real probes establish the full namespace boundary AND the
         # filesystem boundary (real rootfs + pivot_root, built from a real
         # workspace); HARDENED then refuses at the NEXT unimplemented stage
-        # (NETWORK) - the fail-closed chain works end to end. Skipped (with
-        # reason) on a substrate that cannot provide the mapping.
+        # (PRIVILEGES) - the fail-closed chain works end to end. Skipped
+        # (with reason) on a substrate that cannot provide the mapping.
         _require_rootless(self)
         check = setup.namespace_probe()
         self.assertTrue(check.ok, check.reason)
@@ -394,7 +394,7 @@ class ProbeIntegrationTests(unittest.TestCase):
             cfg = _config("hardened", workspace=ws)
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.NETWORK)
+        self.assertEqual(result.failure.stage, InitStage.PRIVILEGES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
         self.assertIn("no implementation", result.failure.reason)
 
