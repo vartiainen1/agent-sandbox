@@ -397,9 +397,98 @@ reduction refuses with the workload never executed.
   refusal, lo-toggle resolution, mount-EPERM resolution.
 - **NATIVE VERIFIED**: fail-closed behavior and host-side logic only;
 the full rootless path remains NOT VERIFIED NATIVE (recorded reason).
-- **KNOWN LIMITATION**: seccomp (Step 13) is not yet installed — the
-  syscall-level restriction remains outstanding; the complete
-  privilege-hardening surface is not claimed until it lands.
+- **KNOWN LIMITATION (RESOLVED in Step 8)**: seccomp is now installed
+  and enforced (see the Step 8 record below); rlimits/cgroups (Step 9),
+  environment sanitization, output limits, timeout/cleanup remain
+  outstanding.
+
+## Phase 1 Step 8 — seccomp filter installation results (2026-08-19)
+
+Mechanism implemented (`agent_sandbox/isolation/seccomp.py`, per
+policy.md - the sanctioned Phase-1 implementation): the derived
+45-syscall default-deny filter is BUILT from the regression-protected
+artifact `tools/seccomp-derivation/allowlist.json` (single source of
+truth - no embedded copy, no parallel policy) host-side in the setup
+child BEFORE entering the boundary (the artifact is unreachable inside
+the pivoted rootfs), then INSTALLED in PID 1 as the LAST Stage-A
+operation - after no_new_privs (Step 6) and the capability reduction
+(Step 7), immediately before the workload fn (methodology.md section 9:
+install after every Stage-A op, never before no_new_privs). The BPF is
+the identical default-deny layout the derivation probe uses: arch guard
+(KILL on AUDIT_ARCH mismatch), linear JEQ allow chain, trailing RET
+ALLOW, default RET_ERRNO|EPERM. Architecture guard: the runtime refuses
+to build/install on anything but x86_64 (the allowlist is x86_64-
+derived).
+
+### Kernel-state verification (never "prctl returned success")
+
+- /proc/self/status read-back at workload time: Seccomp mode == 2
+  (SECCOMP_MODE_FILTER) and Seccomp_filters >= 1 (0 = our install
+  missing = refusal).
+- Behavioral spot check after install: socket(2) must fail EPERM; if it
+  succeeds the state is unexpected and the workload is refused.
+- Empirical finding: Docker Desktop's WSL2 runtime applies its own outer
+  seccomp filter even with seccomp=unconfined (the container process
+  itself shows Seccomp: 2, Seccomp_filters: 1 - verified). Filters are
+  inherited across fork, so sandbox PID 1 reports 2 after our install on
+  Docker (outer + ours) and 1 on a clean native host. The MODE is the
+  state signal; the count must be >= 1.
+
+### Enforcement evidence (DOCKER VERIFIED, uid 1001, real sandbox)
+
+- Workload runs under SECCOMP_MODE_FILTER (read-back at workload time).
+- Allowed syscalls work: a legitimate file read/write/list/stat workload
+  runs under the filter.
+- Forbidden: socket and prctl fail EPERM; the workload cannot load a
+  different filter or alter the bounding set (prctl denied); fork(2) is
+  denied (process creation restricted to the vfork/execve path);
+  exec'd descendants inherit the filter (a fresh interpreter exec'd via
+  execve still gets EPERM on socket - SOCKET_EPERM:1 evidence).
+- no_new_privs (NoNewPrivs: 1) and the empty capability sets are
+  preserved at workload time under the filter.
+- Failure paths: install failure, verification failure (mode 0), and
+  unexpected state (mode 1) all REFUSE with the workload never executed
+  (marker-absent evidence).
+- 31/31 Step 8 tests + full suite 204 tests OK (2 pre-existing substrate
+  skips) container-validated.
+
+### Interaction updates (gate-caught, logged before fixing)
+
+- The socket class is now syscall-denied at workload time: the Step 5
+  network tests were updated to assert the syscall-level denial (socket
+  -> EPERM) over the netns state (which remains verified pre-filter in
+  PID 1); the ioctl flag reads at workload time are no longer possible
+  (they need a socket fd).
+- kill(2) (PID-visibility probe) and prctl(2) (nnp read-back) are denied
+  at workload time: test_host_process_invisibility now probes via
+  /proc/<pid> existence; the nnp read-back uses the NoNewPrivs status
+  field (the prctl read-back remains verified by the probes, which run
+  before the filter).
+
+### Native ubuntu CI (authoritative) — substrate limitation unchanged
+
+| Check | 3.11 | 3.12 |
+|---|---|---|
+| seccomp real-path tests | SKIPPED (recorded reason: setgroups deny EACCES — rootless mapping cannot be established on the runner) | same |
+| host-side BPF/allowlist/fail-closed tests | PASS | PASS |
+| Skeleton / namespace / rootfs / procdev / network / privileges regression | PASS | PASS |
+| Seccomp regression gate (45, no expansion) + behavioral probe | PASS | PASS |
+
+### Step 8 labels
+
+- **DESIGN INTENT** (ADR-008, S-011, policy.md): last-Stage-A install,
+  default-deny EPERM, x86_64-only, allowlist as regression-protected
+  artifact.
+- **DOCKER VERIFIED**: install + mode read-back + allowed/forbidden
+  syscalls + fork/exec inheritance + nnp/cap preservation + all refusal
+  paths, under the actual runtime filter.
+- **NATIVE VERIFIED**: host-side logic (BPF layout, allowlist pin,
+  verification semantics) and fail-closed behavior; the full rootless
+  path remains NOT VERIFIED NATIVE (recorded reason).
+- **KNOWN LIMITATION**: rlimits/cgroups (Step 9), environment
+  sanitization, output limits, timeout/cleanup are not yet implemented;
+  ioctl remains broad (bounded by minimal /dev + dropped caps); the
+  allowlist is x86_64/glibc-specific.
 
 ## Phase 1 Step 6 — no_new_privs results (2026-08-19)
 

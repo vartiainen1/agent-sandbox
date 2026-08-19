@@ -48,6 +48,17 @@ capabilities, including inside its own user namespace (the Step 5
 lo-toggle residual is resolved here: CAP_NET_ADMIN is gone). This
 happens AFTER no_new_privs (mandated order) and before the workload fn.
 
+Step 8 (seccomp, S-011, ADR-008): the derived 45-syscall default-deny
+filter (allowlist.json - the regression-protected artifact) is built
+host-side in child A BEFORE entering the boundary (the artifact is not
+reachable inside the pivoted rootfs), then installed in PID 1 as the
+LAST hardening operation - after no_new_privs and the capability
+reduction, immediately before the workload fn - and verified by
+kernel-observable read-back (/proc/self/status Seccomp=2,
+Seccomp_filters=1) plus a forbidden-syscall (socket -> EPERM) spot
+check (seccomp.py). Install failure, verification failure, or an
+unexpected state refuses before the workload runs.
+
 PID 1 then mounts the sandbox proc view (/proc with hidepid=2 - only PID
 1 can mount a procfs showing the sandbox's own processes) and runs the
 workload inside the new root; a failed or unverifiable boundary aborts
@@ -68,7 +79,7 @@ import sys
 from dataclasses import dataclass
 
 from agent_sandbox.isolation import filesystem as fs_mod
-from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, rootfs, syscalls, userns
+from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import InitFailureCode, InitStage, StageCheck
 
@@ -135,6 +146,10 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
         # PID 1 of the new PID namespace (documented PID semantics).
         os.close(out_r)
         try:
+            # Step 8: build the seccomp program host-side BEFORE entering
+            # the boundary - the allowlist artifact is not reachable
+            # inside the pivoted rootfs; the tuple is inherited into PID 1.
+            program = seccomp_mod.build_program()
             state = enter_all_namespaces()
             fs_state = None
             if rootfs_state is not None:
@@ -164,10 +179,14 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240) -> SandboxRun:
                 # Step 6: no_new_privs established + kernel-state read-back
                 # verified BEFORE the workload fn. Step 7: capability
                 # reduction (full bounding-set drop + cleared sets) after
-                # no_new_privs, verified by read-back. The workload cannot
-                # execute on an unverified privilege state (fail closed).
+                # no_new_privs, verified by read-back. Step 8: the derived
+                # 45-syscall default-deny seccomp filter is installed LAST
+                # and verified (Seccomp=2 read-back + socket->EPERM spot
+                # check). The workload cannot execute on an unverified
+                # privilege/syscall state (fail closed).
                 priv_mod.establish_and_verify()
                 priv_mod.reduce_and_verify()
+                seccomp_mod.establish_and_verify(program)
             except BaseException as e:  # noqa: BLE001
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
@@ -528,9 +547,80 @@ def _privileges_probe_impl(config) -> StageCheck:
 
 def _privileges_guard(config) -> StageCheck:
     """PRIVILEGES stage guard (registered below). Probes the real
-    no_new_privs path; HARDENED/RESTRICTED refuse unless it is
-    established and verified."""
+    no_new_privs + capability-reduction path; HARDENED/RESTRICTED refuse
+    unless it is established and verified."""
     return privileges_probe(config)
+
+
+def seccomp_probe(config) -> StageCheck:
+    """Real-path probe of the SECCOMP mechanism (the derived 45-syscall
+    default-deny filter built host-side, installed in PID 1 after
+    no_new_privs + capability reduction, kernel-state read-back + socket
+    EPERM spot check), run in a forked child so the supervisor never
+    enters the boundary. This is the SECCOMP stage guard's evidence."""
+    return _seccomp_probe_impl(config)
+
+
+def _seccomp_probe_impl(config) -> StageCheck:
+    if not _security_init._is_linux() or not hasattr(os, "fork"):
+        return StageCheck(
+            ok=False, code=InitFailureCode.PLATFORM_UNSUPPORTED,
+            reason="seccomp probe requires Linux with os.fork (fail "
+                   "closed - the filter cannot be installed here)")
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            program = seccomp_mod.build_program()
+            state = enter_all_namespaces()
+        except BaseException as e:  # noqa: BLE001
+            os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
+            os._exit(1)
+        grand = os.fork()
+        if grand == 0:
+            # PID 1: no_new_privs -> capability reduction -> seccomp
+            # install + read-back + enforcement spot check; report the
+            # verdict (the only verdict writer).
+            try:
+                priv_mod.establish_and_verify()
+                priv_mod.reduce_and_verify()
+                seccomp_mod.establish_and_verify(program)
+                os.write(write_fd, b"OK")
+            except BaseException as e:  # noqa: BLE001
+                os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
+            os._exit(0)
+        _, status = os.waitpid(grand, 0)
+        os._exit(0 if os.waitstatus_to_exitcode(status) == 0 else 1)
+    os.close(write_fd)
+    data = b""
+    while True:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+    _, status = os.waitpid(pid, 0)
+    msg = data.decode(errors="replace").strip()
+    if msg == "OK":
+        return StageCheck(
+            ok=True,
+            reason="derived 45-syscall default-deny seccomp filter built "
+                   "from allowlist.json, installed LAST in PID 1 after "
+                   "no_new_privs + capability reduction, kernel-state "
+                   "read-back verified (Seccomp mode = SECCOMP_MODE_FILTER, "
+                   "filter active) and forbidden socket syscall denied "
+                   "with EPERM")
+    return StageCheck(
+        ok=False, code=InitFailureCode.STAGE_FAILED,
+        reason=msg or f"seccomp probe child failed (status {status}) - "
+                      "fail closed, workload not executed")
+
+
+def _seccomp_guard(config) -> StageCheck:
+    """SECCOMP stage guard (registered below). Probes the real filter
+    path; HARDENED/RESTRICTED refuse unless the filter is installed and
+    verified."""
+    return seccomp_probe(config)
 
 
 # Register the guards with the enforcement core. This module is imported
@@ -540,3 +630,4 @@ _security_init.register_stage_guard(InitStage.NAMESPACES, _namespaces_guard)
 _security_init.register_stage_guard(InitStage.FILESYSTEM, _filesystem_guard)
 _security_init.register_stage_guard(InitStage.NETWORK, _network_guard)
 _security_init.register_stage_guard(InitStage.PRIVILEGES, _privileges_guard)
+_security_init.register_stage_guard(InitStage.SECCOMP, _seccomp_guard)

@@ -24,6 +24,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -198,20 +199,21 @@ class NamespaceCreationTests(unittest.TestCase):
     def test_host_process_invisibility(self):
         # Kernel-enforced: only the sandbox's own processes exist in the new
         # PID namespace. The host/test-process pid and nearby pids must not
-        # resolve to anything (kill(pid, 0) -> ESRCH). Edge case: when the
-        # test process IS pid 1 (as in a container), its own pid is
-        # legitimately visible because the fn process itself is sandbox
-        # PID 1 - the assertion tolerates exactly that one pid.
+        # resolve to anything in /proc (which reflects the READER's PID
+        # namespace). kill(2) is denied under the Step 8 filter - /proc
+        # existence is the probe (and kill being denied is itself a
+        # stronger property: the workload cannot signal processes either).
+        # Edge case: when the test process IS pid 1 (as in a container),
+        # its own pid is legitimately visible because the fn process
+        # itself is sandbox PID 1 - the assertion tolerates exactly that
+        # one pid.
         host_pid = os.getpid()
 
         def fn(state):
             visible = []
             for pid in (host_pid, host_pid + 1, host_pid + 2):
-                try:
-                    os.kill(pid, 0)
+                if os.path.exists(f"/proc/{pid}"):
                     visible.append(pid)
-                except ProcessLookupError:
-                    pass
             legit_self = {1}  # sandbox PID 1 = the fn process itself
             if set(visible) <= legit_self:
                 return "HOST_PROCESS_INVISIBLE"
@@ -230,33 +232,32 @@ class NamespaceCreationTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_host_mount_namespace_unchanged(self):
-        # Step 7 (capability reduction) removed CAP_SYS_ADMIN, so a mount
-        # attempt inside the sandbox now FAILS (EPERM) - the workload
-        # cannot mount at all (the mount-namespace distinctness itself is
-        # verified by test_mount_namespace_distinct). The host mount
-        # namespace must be unchanged by the attempt: no propagation, no
-        # leak. (Before Step 7 the fn mounted a tmpfs to demonstrate the
-        # boundary; the gate caught that the workload no longer can - a
-        # stronger property.)
+        # Step 7 (capability reduction) removed CAP_SYS_ADMIN and Step 8's
+        # seccomp filter denies mount(2), so a mount attempt inside the
+        # sandbox now FAILS (EPERM) - the workload cannot mount at all
+        # (the mount-namespace distinctness itself is verified by
+        # test_mount_namespace_distinct). The host mount namespace must be
+        # unchanged by the attempt: no propagation, no leak. (Before Step
+        # 7 the fn mounted a tmpfs to demonstrate the boundary; the gate
+        # caught that the workload no longer can - a stronger property.
+        # rmdir is likewise denied under the filter, so the created dir is
+        # cleaned up host-side after the run.)
         before = _mountinfo()
 
         def fn(state):
             d = tempfile.mkdtemp(prefix="as-mnt-", dir="/tmp")
             try:
-                try:
-                    syscalls.mount(b"tmpfs", d.encode(), b"tmpfs", 0)
-                    attempt = "OK"
-                except OSError as e:
-                    attempt = f"errno:{e.errno}"
-                visible_inside = any(
-                    "tmpfs" in line and d in line for line in _mountinfo())
-                return json.dumps({"dir": d, "attempt": attempt,
-                                   "visible_inside": visible_inside})
-            finally:
-                if os.path.exists(d):
-                    os.rmdir(d)
+                syscalls.mount(b"tmpfs", d.encode(), b"tmpfs", 0)
+                attempt = "OK"
+            except OSError as e:
+                attempt = f"errno:{e.errno}"
+            visible_inside = any(
+                "tmpfs" in line and d in line for line in _mountinfo())
+            return json.dumps({"dir": d, "attempt": attempt,
+                               "visible_inside": visible_inside})
 
         data = json.loads(_run(fn))
+        self.addCleanup(shutil.rmtree, data["dir"], True)  # host-side cleanup
         self.assertNotEqual(data["attempt"], "OK",
                             "mount must fail after the Step 7 capability drop")
         self.assertFalse(data["visible_inside"],
@@ -391,11 +392,11 @@ class FailureModeTests(unittest.TestCase):
 
 class ProbeIntegrationTests(unittest.TestCase):
     @skip_unless_linux
-    def test_namespace_probe_ok_and_hardened_refuses_at_seccomp(self):
+    def test_namespace_probe_ok_and_hardened_refuses_at_resources(self):
         # The real probes establish the full namespace boundary AND the
         # filesystem boundary (real rootfs + pivot_root, built from a real
         # workspace); HARDENED then refuses at the NEXT unimplemented stage
-        # (SECCOMP) - the fail-closed chain works end to end. Skipped
+        # (RESOURCES) - the fail-closed chain works end to end. Skipped
         # (with reason) on a substrate that cannot provide the mapping.
         _require_rootless(self)
         check = setup.namespace_probe()
@@ -404,7 +405,7 @@ class ProbeIntegrationTests(unittest.TestCase):
             cfg = _config("hardened", workspace=ws)
             result = SecurityInitializer(cfg).initialize()
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure.stage, InitStage.SECCOMP)
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
         self.assertEqual(result.failure.code, InitFailureCode.STAGE_UNAVAILABLE)
         self.assertIn("no implementation", result.failure.reason)
 

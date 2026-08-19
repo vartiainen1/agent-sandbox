@@ -87,14 +87,19 @@ verifies both halves: legitimate workloads pass, and
   cleared effective/permitted/inheritable/ambient sets are verified by
   read-back (Step 7, S-009 — the workload holds no capabilities, which
   resolves the Step 5 lo-toggle residual: without CAP_NET_ADMIN the
-  workload cannot bring its own loopback up); seccomp, resources are not
-  yet (Steps 13+).
+  workload cannot bring its own loopback up); the derived 45-syscall
+  default-deny seccomp filter is installed as the LAST Stage-A operation
+  and verified by kernel-observable read-back + forbidden-syscall EPERM
+  enforcement, with fork/exec inheritance (Step 8, S-011 — the socket
+  class is syscall-denied at workload time); rlimits/cgroups,
+  environment sanitization, output limits, timeout/cleanup are not yet
+  (Steps 14+).
 
 ## Validation labeling
 
 | Substrate | Status | Purpose |
 |---|---|---|
-| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests + proc/dev/sys boundary tests + network deny-by-construction tests + no_new_privs/capability-reduction tests | Security claims |
+| Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests + proc/dev/sys boundary tests + network deny-by-construction tests + no_new_privs/capability-reduction/seccomp tests | Security claims |
 | Docker Desktop (container) | Development / reproducible observation; **only substrate where the full rootless mapping + rootfs/pivot_root + proc/dev/sys + network boundary is currently exercised** (uid 1001) | Iteration on Windows; never labeled as native |
 
 **Known native limitation (documented, not hidden)**: the GitHub-hosted
