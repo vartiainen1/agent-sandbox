@@ -3,13 +3,15 @@ phase sub-phase B).
 
 The MCP server carries NO security policy and NO enforcement logic. It is
 a thin adapter over the single enforcement core (ADR-013's exactly-one
-path):
+path) - the session/request logic is shared with the API in
+``agent_sandbox.interface``:
 
     stdio JSON-RPC request
         -> parse / validate (deterministic, zero dependencies)
+        -> SessionManager.initialize/execute   (shared with the API)
         -> common ExecutionRequest
-        -> RuntimeSession.execute()          (the READY/REFUSED gate)
-        -> run_in_sandbox()                  (the only boundary path)
+        -> RuntimeSession.execute()            (the READY/REFUSED gate)
+        -> run_in_sandbox()                    (the only boundary path)
         -> ExecutionResult / ExecutionRefused
         -> JSON-RPC response
 
@@ -25,17 +27,8 @@ set, no handshake beyond this):
 - ``initialize``  params: workspace (required, absolute host dir),
                   mode (hardened|restricted|compatibility, default
                   restricted), audit (optional host JSONL path).
-                  Creates the validated RuntimeConfig, runs
-                  SecurityInitializer (fail closed), stores the session,
-                  returns the decision (ready/refused) with session
-                  identity.
 - ``execute``     params: session_id (required), command (required,
-                  non-empty argv array of strings). Builds the common
-                  ExecutionRequest and calls RuntimeSession.execute().
-                  Returns the result (refused=False, exit_code, output,
-                  truncated, timed_out, cleanup_failure) or the refusal
-                  (refused=True, reason) - never pretending a refusal
-                  succeeded.
+                  non-empty argv array of strings).
 
 JSON-RPC 2.0 behavior (deterministic):
 - id preservation on every response; notifications (no id) produce no
@@ -55,10 +48,10 @@ Transport:
   stdio convention). stdout carries ONLY responses; diagnostics go to
   stderr. EOF ends ``serve()`` cleanly. Empty lines are skipped.
 
-Decision equivalence with the CLI: the same validated ExecutionRequest
-through the same RuntimeSession.execute() yields the same security
-decision; the response payloads carry the same fields as the CLI's
-``--json`` payloads (mode + session identity included).
+Decision equivalence with the CLI and API: the same validated
+ExecutionRequest through the same RuntimeSession.execute() yields the
+same security decision; the response payloads carry the same fields as
+the CLI's ``--json`` payloads (mode + session identity included).
 
 Import safety: stdlib only; nothing Linux-specific at import time.
 
@@ -70,17 +63,8 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any
 
-from agent_sandbox.audit import AuditRecorder
-from agent_sandbox.config import RuntimeConfig
-from agent_sandbox.models import (
-    ConfigError,
-    ExecutionRefused,
-    ExecutionRequest,
-    ExecutionRequestError,
-)
-from agent_sandbox.runtime.session import RuntimeSession
+from agent_sandbox.interface import InterfaceParamError, SessionManager
 
 # JSON-RPC 2.0 error codes.
 PARSE_ERROR = -32700
@@ -93,15 +77,9 @@ INTERNAL_ERROR = -32603
 METHOD_INITIALIZE = "initialize"
 METHOD_EXECUTE = "execute"
 
-_MODE_VALUES = ("hardened", "restricted", "compatibility")
-
 # Fixed generic message for unexpected failures - never leaks host
 # exception details, environment, credentials, or internal paths.
 _GENERIC_INTERNAL_ERROR = "internal error"
-
-
-class _ParamError(ValueError):
-    """Deterministic invalid-parameters error (message is user-facing)."""
 
 
 def _error(request_id, code: int, message: str) -> dict:
@@ -160,109 +138,29 @@ def parse_message(line: str):
 class McpServer:
     """The stdio JSON-RPC 2.0 front-end.
 
-    Holds one ``RuntimeSession`` per ``initialize`` call, keyed by
-    session id (S-023 - every execution response carries its session
-    identity). Sessions are created only through ``initialize``, which
-    runs the real fail-closed ``SecurityInitializer``; there is no way
-    to reach the boundary without a READY/REFUSED decision.
+    Holds one ``RuntimeSession`` per ``initialize`` call (via the shared
+    SessionManager), keyed by session id (S-023 - every execution
+    response carries its session identity). Sessions are created only
+    through ``initialize``, which runs the real fail-closed
+    ``SecurityInitializer``; there is no way to reach the boundary
+    without a READY/REFUSED decision.
     """
 
     def __init__(self) -> None:
-        self._sessions: dict[str, RuntimeSession] = {}
+        self._manager = SessionManager()
 
-    # -- session lifecycle (thin, no policy) --------------------------------
-    def _new_session(self, config: RuntimeConfig, audit) -> RuntimeSession:
-        """Patchable seam for tests (mirrors the CLI tests' patching of
-        SecurityInitializer/RuntimeSession - production creates the real
-        session)."""
-        return RuntimeSession(config, audit=audit)
-
-    def _initialize(self, params: dict) -> dict:
-        workspace = params.get("workspace")
-        mode = params.get("mode", "restricted")
-        audit = params.get("audit")
-
-        if not isinstance(workspace, str) or not workspace.strip():
-            raise _ParamError(
-                "initialize: workspace is required (an absolute host "
-                "directory copied into the sandbox)")
-        if not isinstance(mode, str) or mode not in _MODE_VALUES:
-            raise _ParamError(
-                f"initialize: invalid mode {mode!r} (supported: "
-                f"{', '.join(_MODE_VALUES)}) - mode is explicit and never "
-                "auto-downgraded")
-        if audit is not None and (not isinstance(audit, str) or not audit):
-            raise _ParamError("initialize: audit must be a non-empty path")
-
-        try:
-            config = RuntimeConfig.from_dict({"mode": mode,
-                                              "workspace": workspace})
-        except ConfigError as e:
-            raise _ParamError(str(e)) from None
-
-        recorder = AuditRecorder(audit) if audit else None
-        session = self._new_session(config, recorder)
-        result = session.initialize()
-
-        self._sessions[session.session_id] = session
-        return {
-            "session_id": session.session_id,
-            "mode": config.mode.value,
-            "state": "ready" if result.ok else "refused",
-            "refused": not result.ok,
-            "reason": result.failure.describe() if result.failure else "",
-        }
-
-    def _execute(self, params: dict) -> dict:
-        session_id = params.get("session_id")
-        command = params.get("command")
-
-        if not isinstance(session_id, str) or not session_id:
-            raise _ParamError("execute: session_id is required "
-                              "(a non-empty string)")
-        if not isinstance(command, list) or not command:
-            raise _ParamError("execute: command is required (a non-empty "
-                              "argv array)")
-        if not all(isinstance(part, str) for part in command):
-            raise _ParamError("execute: command argv entries must be strings")
-
-        session = self._sessions.get(session_id)
-        if session is None:
-            raise _ParamError(f"execute: unknown session {session_id!r}")
-
-        try:
-            request = ExecutionRequest(command=tuple(command))
-        except ExecutionRequestError as e:
-            raise _ParamError(str(e)) from None
-
-        outcome = session.execute(request)
-
-        if isinstance(outcome, ExecutionRefused):
-            return {
-                "session_id": session.session_id,
-                "mode": session.config.mode.value,
-                "state": outcome.state,
-                "refused": True,
-                "reason": outcome.reason,
-            }
-        return {
-            "session_id": session.session_id,
-            "mode": session.config.mode.value,
-            "state": "ready",
-            "refused": False,
-            "exit_code": outcome.exit_code,
-            "output": outcome.output,
-            "truncated": outcome.truncated,
-            "timed_out": outcome.timed_out,
-            "cleanup_failure": outcome.cleanup_failure,
-        }
+    @property
+    def _sessions(self) -> dict:
+        """The shared session registry (inspection surface for tests;
+        production code never mutates it directly)."""
+        return self._manager.sessions
 
     # -- protocol core ------------------------------------------------------
     def _dispatch(self, method: str, params: dict, request_id):
         if method == METHOD_INITIALIZE:
-            return _result(request_id, self._initialize(params))
+            return _result(request_id, self._manager.initialize(params))
         if method == METHOD_EXECUTE:
-            return _result(request_id, self._execute(params))
+            return _result(request_id, self._manager.execute(params))
         return _error(request_id, METHOD_NOT_FOUND,
                       f"method not found: {method}")
 
@@ -283,7 +181,7 @@ class McpServer:
         try:
             response = self._dispatch(request["method"], request["params"],
                                       request_id)
-        except _ParamError as e:
+        except InterfaceParamError as e:
             response = _error(request_id, INVALID_PARAMS,
                               f"invalid params: {e}")
         except Exception:  # noqa: BLE001 - never leak or crash

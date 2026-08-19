@@ -1200,3 +1200,64 @@ VERIFIED NATIVE (recorded AppArmor/setgroups substrate reason, unchanged).
 KNOWN LIMITATION (unchanged): HARDENED end-to-end and native rootless
 sandbox-internal execution remain NOT VERIFIED on current substrates;
 the API interface (ADR-013 Phase 12) is not yet implemented.
+
+## Interface phase — sub-phase C: HTTP API front-end (2026-08-19)
+
+DESIGN INTENT (ADR-013, S-017): the API is the LAST thin front-end over
+the single enforcement core. It shares the session/request core with the
+MCP server (`agent_sandbox/interface.SessionManager` — literally the
+same initialize/execute code), so three-way decision equivalence is
+structural: HTTP POST -> JSON body -> SessionManager -> common
+ExecutionRequest -> RuntimeSession.execute() -> run_in_sandbox() ->
+result/refusal -> JSON response. The API carries NO security policy,
+never calls run_in_sandbox/command_workload, never uses
+subprocess/os.system/os.popen/os.execve or a shell (AST-guarded), and
+cannot bypass SecurityInitializer or the READY/REFUSED gate. Transport
+is stdlib `http.server` ONLY - zero new runtime dependencies (no
+framework; the architecture does not require one). Endpoints are the
+minimum surface: `POST /initialize` (workspace/mode/audit) and
+`POST /execute` (session_id + command argv vector).
+
+BINDING (v0.1 posture, documented - not invented policy): loopback
+(127.0.0.1) is the DEFAULT and only implicit bind. The interfaces are
+host-side supervisor surfaces, not the security boundary (ARCHITECTURE
+section 16); there is no authentication layer in v0.1 (none specified,
+consistent with the local CLI/MCP trust model), so the loopback default
+is the containment. Non-loopback binding is an explicit operator choice
+(`--host`) requiring separate review; the server never does it
+implicitly.
+
+DOCKER VERIFIED (uid 1001, the actual runtime filter, 31/31 tests):
+- Real `POST /initialize` -> READY session and real `POST /execute` of a
+  workspace-provided static ELF over real loopback HTTP through the
+  complete boundary; exit 0, `HTTP-ELF-OK` output, `cleanup_failure ==
+  ""`, session identity preserved.
+- Unavailable command -> deterministic in-sandbox failure (never a host
+  fallback); timeout -> `timed_out=True`, `cleanup_failure == ""`.
+- Deterministic errors over HTTP: 400 malformed JSON / invalid params /
+  unknown session / invalid argv, 404 unknown path, 405 wrong method,
+  413 oversized body (bounded drain before responding - the in-flight
+  body is consumed so the 413 is delivered deterministically), 500
+  generic message for internal failures (no traceback/type/env/
+  credential/path ever leaks).
+- Bad requests never execute: malformed/unknown-path/GET requests never
+  reach execute(); a valid follow-up still runs (no poisoning).
+
+HOST-SIDE VERIFIED (runs everywhere, Windows 465/465 - 180 substrate
+skips):
+- Three-way decision equivalence CLI vs MCP vs API: identical payload
+  fields for success, refusal, invalid mode (rejected before
+  initialization on all three), invalid command (rejected before
+  execution), malformed input (never executes).
+- Audit correlation (ADR-012): initialize + execute events share one
+  session id; refusal recorded; recorder failure observational.
+- Server lifecycle: loopback default bind verified, serve_forever +
+  shutdown cleanly on an ephemeral port.
+
+NATIVE VERIFIED: host-side protocol/validation/equivalence logic and
+fail-closed paths on 3.11/3.12; the real sandbox-internal API path
+remains NOT VERIFIED NATIVE (recorded AppArmor/setgroups substrate
+reason, unchanged).
+
+KNOWN LIMITATION (unchanged): HARDENED end-to-end and native rootless
+sandbox-internal execution remain NOT VERIFIED on current substrates.
