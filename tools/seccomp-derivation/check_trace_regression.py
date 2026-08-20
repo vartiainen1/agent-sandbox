@@ -101,9 +101,10 @@ def main() -> int:
         return 2
     artifact = load_artifact(artifact_path)
     missing, problems = check_trace(trace_path, artifact)
-    print(f"artifact: {ARTIFACT}")
+    expected = EXPECTED_COUNT_AARCH64 if aarch64 else EXPECTED_COUNT_X86_64
+    print(f"artifact: {artifact_path}")
     print(f"trace   : {trace_path}")
-    print(f"allowlist size: {len(artifact['allowlist'])} (expected {EXPECTED_COUNT})")
+    print(f"allowlist size: {len(artifact['allowlist'])} (expected {expected})")
     if problems:
         print("ARTIFACT INVALID:")
         for p in problems:
