@@ -91,7 +91,7 @@ SKIP_HARDENED = not HARDENED_FEASIBLE
 
 
 def _make_config(mode: str = "hardened", workspace: str | None = None,
-                 wall_time: int = 900) -> dict:
+                 wall_time: int = 900, command: tuple[str, ...] | None = None) -> dict:
     """Build a config dict matching the project convention."""
     return {
         "mode": mode,
