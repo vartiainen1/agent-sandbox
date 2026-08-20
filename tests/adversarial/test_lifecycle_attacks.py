@@ -64,6 +64,7 @@ def _run_attack(fn, output_mb=50, wall_time_seconds=900):
 # T-038: Incomplete Cleanup (S-038, S-024)
 # ---------------------------------------------------------------------------
 
+@unittest.skipUnless(LINUX, "real sandbox requires Linux")
 class IncompleteCleanupTests(unittest.TestCase):
     """T-038: Verify that cleanup is complete after execution.
 
@@ -135,6 +136,7 @@ class IncompleteCleanupTests(unittest.TestCase):
 # T-039: Destroy Race (S-038)
 # ---------------------------------------------------------------------------
 
+@unittest.skipUnless(LINUX, "real sandbox requires Linux")
 class DestroyRaceTests(unittest.TestCase):
     """T-039: Verify that the destroy/cleanup path is robust.
 
@@ -190,6 +192,7 @@ class DestroyRaceTests(unittest.TestCase):
 # T-043: Policy Tampering from Inside (S-025, S-026)
 # ---------------------------------------------------------------------------
 
+@unittest.skipUnless(LINUX, "real sandbox requires Linux")
 class PolicyTamperingTests(unittest.TestCase):
     """T-043: Attempt to modify security policy from inside the sandbox.
 
@@ -294,6 +297,7 @@ class PolicyTamperingTests(unittest.TestCase):
 # T-050: Prompt Injection (S-015)
 # ---------------------------------------------------------------------------
 
+@unittest.skipUnless(LINUX, "real sandbox requires Linux")
 class PromptInjectionTests(unittest.TestCase):
     """T-050: Verify that prompt injection in workload input cannot
     bypass security policy.
