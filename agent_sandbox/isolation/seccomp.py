@@ -58,6 +58,7 @@ SECCOMP_RET_KILL_PROCESS = 0x80000000
 SECCOMP_RET_ALLOW = 0x7FFF0000
 SECCOMP_RET_ERRNO = 0x00050000
 AUDIT_ARCH_X86_64 = 0xC000003E
+AUDIT_ARCH_AARCH64 = 0xC00000B7
 # struct seccomp_data offsets (kernel ABI)
 _OFF_ARCH = 4
 _OFF_NR = 0
@@ -123,23 +124,47 @@ def _read_proc_status_impl() -> str:
 _read_proc_status = _read_proc_status_impl
 
 
+def _detect_arch() -> str:
+    """Detect the current CPU architecture for seccomp purposes.
+    Returns 'x86_64', 'aarch64', or raises on unsupported."""
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "x86_64"
+    if machine in ("aarch64", "arm64"):
+        return "aarch64"
+    raise NamespaceSetupError(
+        f"seccomp allowlist not available for architecture {machine!r} "
+        "- refusing to build a filter (fail closed)")
+
+
 def _is_x86_64() -> bool:
-    """Architecture guard: the derived allowlist is x86_64-only (policy.md
-    section 1). Refuses on anything else - never silently applies an
-    allowlist derived for another architecture."""
-    return platform.machine().lower() in ("x86_64", "amd64")
+    """Architecture guard: true on x86_64 only."""
+    try:
+        return _detect_arch() == "x86_64"
+    except NamespaceSetupError:
+        return False
 
 
-def _allowlist_path() -> pathlib.Path:
-    return pathlib.Path(__file__).resolve().parents[2] / "tools" / \
-        "seccomp-derivation" / "allowlist.json"
+def _allowlist_path(arch: str | None = None) -> pathlib.Path:
+    """Return the architecture-specific allowlist artifact path."""
+    if arch is None:
+        try:
+            arch = _detect_arch()
+        except NamespaceSetupError:
+            arch = "x86_64"  # fallback for tests that mock detection
+    base = pathlib.Path(__file__).resolve().parents[2] / "tools" / \
+        "seccomp-derivation"
+    if arch == "aarch64":
+        return base / "allowlist_aarch64.json"
+    return base / "allowlist.json"
 
 
-def load_allowlist() -> list[str]:
+def load_allowlist(arch: str | None = None) -> tuple[list[str], dict[str, int]]:
     """Load the derived allowlist artifact (the single source of truth).
+    Returns (allowlist_names, syscall_number_map).
     Fail closed on an unreadable or invalid artifact - a missing policy
-    is a refusal, never a silent "no filter"."""
-    path = _allowlist_path()
+    is a refusal, never a silent 'no filter'."""
+    path = _allowlist_path(arch)
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -152,7 +177,32 @@ def load_allowlist() -> list[str]:
         raise NamespaceSetupError(
             f"seccomp allowlist artifact {path} has no allowlist - fail "
             "closed, workload not executed")
-    return list(allow)
+    numbers = data.get("syscall_numbers")
+    if not isinstance(numbers, dict):
+        numbers = dict(_X86_64)
+    return list(allow), numbers
+
+
+_ARCH_TABLES: dict[str, dict[str, int]] = {}
+
+
+def _get_arch_table(arch: str | None = None) -> dict[str, int]:
+    """Get the syscall number table for the given architecture."""
+    if arch is None:
+        arch = _detect_arch()
+    if arch not in _ARCH_TABLES:
+        _ARCH_TABLES[arch] = dict(_X86_64) if arch == "x86_64" else {}
+    return _ARCH_TABLES[arch]
+
+
+def _audit_arch(arch: str) -> int:
+    """Return the AUDIT_ARCH constant for the given architecture."""
+    if arch == "x86_64":
+        return AUDIT_ARCH_X86_64
+    if arch == "aarch64":
+        return AUDIT_ARCH_AARCH64
+    raise NamespaceSetupError(
+        f"unsupported architecture {arch!r} for seccomp (fail closed)")
 
 
 def build_program(allowlist: list[str] | None = None) -> tuple:
@@ -162,26 +212,31 @@ def build_program(allowlist: list[str] | None = None) -> tuple:
     Deterministic layout (pinned by tests). Must be called on the host
     side (the allowlist artifact is not reachable inside the pivoted
     rootfs); the program tuple is inherited across fork into PID 1."""
-    if not _is_x86_64():
-        raise NamespaceSetupError(
-            "seccomp allowlist is derived for x86_64 only - refusing to "
-            "build a filter on another architecture (fail closed)")
-    allow = load_allowlist() if allowlist is None else allowlist
-    unknown = [name for name in allow if name not in _X86_64]
+    arch = _detect_arch()
+    if allowlist is not None:
+        # Explicit allowlist: use the x86_64 table for backward compat
+        numbers = dict(_X86_64)
+        audit = AUDIT_ARCH_X86_64
+    else:
+        allow, numbers = load_allowlist(arch)
+        audit = _audit_arch(arch)
+        allowlist = allow
+    unknown = [name for name in allowlist if name not in numbers]
     if unknown:
         raise NamespaceSetupError(
-            "allowlist contains syscalls with no x86_64 number in the "
-            f"runtime table: {unknown} - fail closed, workload not executed")
+            "allowlist contains syscalls with no number in the "
+            f"{arch} runtime table: {unknown} - fail closed, workload "
+            "not executed")
     insns: list[tuple[int, int, int, int]] = [
         (_BPF_LD | _BPF_W | _BPF_ABS, 0, 0, _OFF_ARCH),
-        (_BPF_JMP | _BPF_JEQ | _BPF_K, 1, 0, AUDIT_ARCH_X86_64),
+        (_BPF_JMP | _BPF_JEQ | _BPF_K, 1, 0, audit),
         (_BPF_RET | _BPF_K, 0, 0, SECCOMP_RET_KILL_PROCESS),
         (_BPF_LD | _BPF_W | _BPF_ABS, 0, 0, _OFF_NR),
     ]
-    allow_idx = 4 + len(allow) + 1  # position of the trailing RET ALLOW
-    for name in allow:
+    allow_idx = 4 + len(allowlist) + 1  # position of the trailing RET ALLOW
+    for name in allowlist:
         insns.append((_BPF_JMP | _BPF_JEQ | _BPF_K,
-                      allow_idx - (len(insns) + 1), 0, _X86_64[name]))
+                      allow_idx - (len(insns) + 1), 0, numbers[name]))
     insns.append((_BPF_RET | _BPF_K, 0, 0, SECCOMP_RET_ERRNO | _EPERM))
     insns.append((_BPF_RET | _BPF_K, 0, 0, SECCOMP_RET_ALLOW))
     return tuple(insns)

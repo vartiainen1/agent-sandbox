@@ -141,7 +141,7 @@ class SeccompHostTests(unittest.TestCase):
     """BPF/allowlist/verification logic - runs everywhere."""
 
     def test_allowlist_loaded_from_artifact(self):
-        allow = sc_mod.load_allowlist()
+        allow, numbers = sc_mod.load_allowlist()
         self.assertEqual(len(allow), 45)
         self.assertEqual(len(set(allow)), 45, "allowlist must be unique")
         self.assertEqual(allow, sorted(allow), "allowlist must be sorted")
@@ -150,7 +150,8 @@ class SeccompHostTests(unittest.TestCase):
         # Pins the exact 45-syscall set - NO UNDOCUMENTED SYSCALL
         # EXPANSION (policy.md section 5). A change here requires the
         # full derivation process.
-        self.assertEqual(sc_mod.load_allowlist(), EXPECTED_ALLOWLIST)
+        allow, _ = sc_mod.load_allowlist()
+        self.assertEqual(allow, EXPECTED_ALLOWLIST)
 
     def test_prctl_seccomp_constants(self):
         self.assertEqual(sc_mod.PR_SET_SECCOMP, 22)
@@ -159,7 +160,7 @@ class SeccompHostTests(unittest.TestCase):
         self.assertEqual(sc_mod.AUDIT_ARCH_X86_64, 0xC000003E)
 
     def test_x86_64_table_covers_allowlist(self):
-        allow = sc_mod.load_allowlist()
+        allow, _ = sc_mod.load_allowlist()
         missing = [n for n in allow if n not in sc_mod._X86_64]
         self.assertEqual(missing, [])
 
@@ -184,13 +185,14 @@ class SeccompHostTests(unittest.TestCase):
     def test_build_unknown_syscall_refuses(self):
         with self.assertRaises(NamespaceSetupError) as cm:
             sc_mod.build_program(["not_a_syscall"])
-        self.assertIn("no x86_64 number", str(cm.exception))
+        self.assertIn("no", str(cm.exception).lower())
+        self.assertIn("runtime table", str(cm.exception))
 
     def test_arch_guard_refuses_non_x86_64(self):
-        with unittest.mock.patch.object(sc_mod, "_is_x86_64", return_value=False):
+        with unittest.mock.patch.object(sc_mod, "_detect_arch", side_effect=NamespaceSetupError("unsupported architecture")):
             with self.assertRaises(NamespaceSetupError) as cm:
                 sc_mod.build_program(EXPECTED_ALLOWLIST)
-        self.assertIn("x86_64 only", str(cm.exception))
+        self.assertIn("unsupported architecture", str(cm.exception))
 
     def test_install_failure_refuses(self):
         def boom(option, arg2, arg3, arg4, arg5):

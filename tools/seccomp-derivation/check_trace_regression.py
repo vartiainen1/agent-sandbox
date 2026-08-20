@@ -24,15 +24,12 @@ import json
 import pathlib
 import sys
 
-EXPECTED_COUNT = 45  # must match docs/seccomp-derivation/syscall-classification.md
+EXPECTED_COUNT_X86_64 = 45
+EXPECTED_COUNT_AARCH64 = 43
 
 HERE = pathlib.Path(__file__).resolve().parent
-ARTIFACT = HERE / "allowlist.json"
-
-
-def load_artifact(path: pathlib.Path = ARTIFACT) -> dict:
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+ARTIFACT_X86_64 = HERE / "allowlist.json"
+ARTIFACT_AARCH64 = HERE / "allowlist_aarch64.json"
 
 
 def validate_artifact(artifact: dict) -> list[str]:
@@ -42,8 +39,10 @@ def validate_artifact(artifact: dict) -> list[str]:
     if not isinstance(allow, list) or not allow:
         problems.append("allowlist missing or empty")
         return problems
-    if len(allow) != EXPECTED_COUNT:
-        problems.append(f"allowlist has {len(allow)} entries, expected {EXPECTED_COUNT}")
+    arch = artifact.get("arch", "x86_64")
+    expected = EXPECTED_COUNT_AARCH64 if arch == "aarch64" else EXPECTED_COUNT_X86_64
+    if len(allow) != expected:
+        problems.append(f"allowlist has {len(allow)} entries, expected {expected} (arch={arch})")
     if allow != sorted(allow):
         problems.append("allowlist is not sorted")
     if len(set(allow)) != len(allow):
@@ -56,6 +55,17 @@ def validate_artifact(artifact: dict) -> list[str]:
             problems.append(f"{name} contains syscalls not in allowlist")
     if artifact.get("default_action") != "SECCOMP_RET_ERRNO | EPERM (deny)":
         problems.append("default_action must be EPERM deny")
+    # aarch64-specific checks
+    if arch == "aarch64":
+        numbers = artifact.get("syscall_numbers")
+        if not isinstance(numbers, dict):
+            problems.append("syscall_numbers missing for aarch64")
+        else:
+            for name in allow:
+                if name not in numbers:
+                    problems.append(f"{name} missing from syscall_numbers")
+                elif not isinstance(numbers[name], int) or numbers[name] < 0:
+                    problems.append(f"{name} has invalid syscall number: {numbers[name]}")
     return problems
 
 
@@ -68,15 +78,28 @@ def check_trace(trace_path: pathlib.Path, artifact: dict) -> tuple[list[str], li
     return sorted(observed - allow), validate_artifact(artifact)
 
 
+def load_artifact(path: pathlib.Path | None = None) -> dict:
+    p = path or ARTIFACT_X86_64
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def main() -> int:
-    if len(sys.argv) > 2:
-        print("usage: check_trace_regression.py [trace-results.json]", file=sys.stderr)
+    if len(sys.argv) > 3:
+        print("usage: check_trace_regression.py [--aarch64] [trace-results.json]",
+              file=sys.stderr)
         return 2
-    trace_path = pathlib.Path(sys.argv[1]) if len(sys.argv) == 2 else HERE / "trace-results.json"
+    aarch64 = "--aarch64" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--aarch64"]
+    trace_path = pathlib.Path(args[0]) if args else None
+    artifact_path = ARTIFACT_AARCH64 if aarch64 else ARTIFACT_X86_64
+    if trace_path is None:
+        trace_name = "trace-results-aarch64.json" if aarch64 else "trace-results.json"
+        trace_path = HERE / trace_name
     if not trace_path.exists():
         print(f"ERROR: trace file not found: {trace_path}", file=sys.stderr)
         return 2
-    artifact = load_artifact()
+    artifact = load_artifact(artifact_path)
     missing, problems = check_trace(trace_path, artifact)
     print(f"artifact: {ARTIFACT}")
     print(f"trace   : {trace_path}")
