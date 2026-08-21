@@ -123,30 +123,21 @@ class HookAttackTests(unittest.TestCase):
     """
 
     def _hook_attack_payload(self, state, fs):
-        """Simulate a malicious Git hook: attempt shell command + network.
+        """Simulate a malicious Git hook: attempt network + escape writes.
 
         This is a workload function that runs INSIDE the sandbox. It
-        simulates what a hostile .git/hooks/post-checkout would do:
-        1. Try to execute a shell command (exfiltrate data).
-        2. Try to open a network connection (send data to attacker).
-        3. Try to write to a host path outside the workspace.
+        simulates what a hostile .git/hooks/post-checkout would do
+        (the shell-exec attempt is verified separately by
+        ``test_hook_shell_execution_contained`` - a successful exec
+        replaces this process, so it cannot share this JSON payload):
+        1. Open a network connection (send data to attacker).
+        2. Write to a path outside the workspace.
+        3. Read sensitive host data.
         4. Report what happened (deterministic marker).
         """
         results = {}
 
-        # Attempt 1: Execute a shell command to exfiltrate data.
-        # In the minimal rootfs, /bin/sh does not exist, so this
-        # should fail deterministically.
-        try:
-            os.execve("/bin/sh", ["/bin/sh", "-c",
-                                  "cat /etc/passwd > /tmp/exfil.txt"],
-                      os.environ)
-        except FileNotFoundError as e:
-            results["shell_exec"] = f"BLOCKED: {e}"
-        except OSError as e:
-            results["shell_exec"] = f"BLOCKED: {e}"
-
-        # Attempt 2: Open a network socket to exfiltrate data.
+        # Attempt 1: Open a network socket to exfiltrate data.
         # Socket syscall is denied by the 45-syscall seccomp allowlist.
         try:
             import socket
@@ -163,7 +154,7 @@ class HookAttackTests(unittest.TestCase):
         except Exception as e:
             results["network"] = f"BLOCKED: {type(e).__name__}: {e}"
 
-        # Attempt 3: Write to a path that simulates a host escape.
+        # Attempt 2: Write to a path that simulates a host escape.
         # The workspace is the only writable location; /host-outside
         # does not exist in the sandbox rootfs.
         try:
@@ -172,7 +163,7 @@ class HookAttackTests(unittest.TestCase):
         except (OSError, PermissionError) as e:
             results["host_write"] = f"BLOCKED: {e}"
 
-        # Attempt 4: Read sensitive host data.
+        # Attempt 3: Read sensitive host data.
         try:
             data = pathlib.Path("/etc/shadow").read_text()
             results["sensitive_read"] = f"LEAKED: {len(data)} bytes"
@@ -203,10 +194,6 @@ class HookAttackTests(unittest.TestCase):
         self.assertEqual(data["marker"], "HOOK-ATTACK-EXECUTED",
                          "payload must execute inside the sandbox")
 
-        # Shell command must be blocked (no /bin/sh in minimal rootfs).
-        self.assertIn("BLOCKED", data["shell_exec"],
-                      f"shell exec must be blocked: {data['shell_exec']}")
-
         # Network connection must be blocked (socket denied by seccomp).
         self.assertIn("BLOCKED", data["network"],
                       f"network must be blocked: {data['network']}")
@@ -219,6 +206,73 @@ class HookAttackTests(unittest.TestCase):
         self.assertIn("BLOCKED", data["sensitive_read"],
                       f"sensitive read must be blocked: "
                       f"{data['sensitive_read']}")
+
+    @unittest.skipUnless(LINUX, "real sandbox requires Linux")
+    def test_hook_shell_execution_contained(self):
+        """T-047: the malicious hook's shell command executes inside the
+        sandbox but its effect cannot escape.
+
+        The v0.1 toolchain (ADR-005) provides /bin/sh inside the
+        sandbox, so the exec SUCCEEDS - the containment claim is that
+        the command runs against the SANDBOX rootfs/tmpfs and cannot
+        touch host files. On substrates without the toolchain the
+        minimal rootfs has no /bin/sh and the exec is denied instead -
+        both are contained outcomes. The payload replaces this process
+        (execve is the only way to run a command - clone/fork and
+        posix_spawn are denied by the 45-syscall allowlist), so the
+        evidence comes from the exec'd command's own output plus a
+        host-side absence check.
+        """
+        def fn(state, fs):
+            # If /bin/sh exists (toolchain), exec it: it writes the
+            # passwd to the SANDBOX /tmp and reports the file size. If
+            # /bin/sh is absent (minimal rootfs), the exec is denied.
+            try:
+                os.execve(
+                    "/bin/sh",
+                    ["/bin/sh", "-c",
+                     "cat /etc/passwd > /tmp/exfil.txt; "
+                     "echo SHELL_RAN; wc -c < /tmp/exfil.txt"],
+                    os.environ)
+            except FileNotFoundError as e:
+                return json.dumps({"shell": f"BLOCKED: {e}"})
+            except OSError as e:
+                return json.dumps({"shell": f"BLOCKED: {e}"})
+            return None  # unreachable: execve replaces or raises
+
+        host_exfil = pathlib.Path("/tmp/exfil.txt")
+        if host_exfil.exists():
+            host_exfil.unlink()  # deterministic baseline
+
+        run = _run_attack(fn)
+        self.assertEqual(run.exit_code, 0, run.output)
+        self.assertFalse(run.truncated)
+        self.assertFalse(run.timed_out)
+        self.assertEqual(run.cleanup_failure, "",
+                         f"no workload process may survive: "
+                         f"{run.cleanup_failure}")
+
+        if "BLOCKED" in run.output:
+            # Minimal rootfs (no toolchain): no shell to run - denied.
+            return
+
+        # Toolchain present: the shell EXECUTED inside the sandbox.
+        self.assertIn("SHELL_RAN", run.output,
+                      f"shell command must execute: {run.output!r}")
+        # The exfil file it created lives in the SANDBOX tmpfs; the HOST
+        # /tmp/exfil.txt must not exist (the sandbox /tmp is not the
+        # host /tmp).
+        self.assertFalse(host_exfil.exists(),
+                         "shell exfil must not reach the host filesystem")
+        # The data it could copy is the SANDBOX /etc/passwd (sanitized
+        # root/nobody only, ~<200 bytes) - not the host passwd.
+        size_line = [ln.strip() for ln in run.output.splitlines()
+                     if ln.strip().isdigit()]
+        self.assertTrue(size_line,
+                        f"shell must report the exfil size: {run.output!r}")
+        self.assertLess(int(size_line[-1]), 200,
+                        f"exfil must be the sanitized sandbox passwd, "
+                        f"got {size_line[-1]} bytes")
 
     @unittest.skipUnless(LINUX, "real sandbox requires Linux")
     def test_hook_attack_no_host_file_modification(self):
@@ -375,25 +429,29 @@ class DependencyAttackTests(unittest.TestCase):
         self.assertEqual(data["marker"], "DEPENDENCY-ATTACK-EXECUTED",
                          "payload must execute inside the sandbox")
 
-        # Crontab inject: may succeed inside the sandbox (sandbox's
-        # own /etc, not host's) — the key is that it does not reach
-        # the host. We verify containment separately in
+        # Crontab inject: must be CONTAINED. The v0.1 toolchain
+        # (ADR-005) mounts /etc as a READ-ONLY system layer, so the
+        # write is denied with EROFS; the minimal rootfs (no toolchain)
+        # denied it with EACCES; a writable minimal rootfs would accept
+        # it into the SANDBOX's own /etc. Every outcome is contained - a
+        # writable HOST /etc is never reachable. We verify host-side
+        # containment separately in
         # test_dependency_attack_no_host_file_modification.
-        self.assertIn(data["crontab_inject"],
-                      ["SANDBOX-INTERNAL (contained)",
-                       "BLOCKED: PermissionError: [Errno 13] Permission denied: '/etc/evil-crontab'"],
-                      f"crontab inject must be contained: "
-                      f"{data['crontab_inject']}")
+        self.assertTrue(
+            data["crontab_inject"] == "SANDBOX-INTERNAL (contained)"
+            or data["crontab_inject"].startswith("BLOCKED"),
+            f"crontab inject must be contained: "
+            f"{data['crontab_inject']}")
         self.assertIn("BLOCKED", data["setuid_create"],
                       f"setuid creation must be blocked: "
                       f"{data['setuid_create']}")
         # /proc/sys/kernel/hostname is namespace-scoped — writing it
         # only affects the sandbox's UTS namespace. Verify it's contained.
-        self.assertIn(data["proc_modify"],
-                      ["SANDBOX-INTERNAL (namespace-scoped)",
-                       "BLOCKED: PermissionError: [Errno 13] Permission denied: '/proc/sys/kernel/hostname'"],
-                      f"proc modify must be contained: "
-                      f"{data['proc_modify']}")
+        self.assertTrue(
+            data["proc_modify"] == "SANDBOX-INTERNAL (namespace-scoped)"
+            or data["proc_modify"].startswith("BLOCKED"),
+            f"proc modify must be contained: "
+            f"{data['proc_modify']}")
         self.assertEqual(data["credential_access"], [],
                          "no credential paths must be reachable")
         self.assertIn("BLOCKED", data["escape_write"],
@@ -586,20 +644,43 @@ class BuildScriptAttackTests(unittest.TestCase):
         def fn(state, fs):
             # Comprehensive credential path scan from inside the sandbox.
             hits = []
+            # Paths that must ALWAYS be absent (host credentials,
+            # sockets, shadow). The v0.1 toolchain (ADR-005) provides a
+            # SANITIZED /etc/passwd (root/nobody only, no hashes), so
+            # /etc/passwd is reported separately and validated by
+            # content - its presence is not a host-credential leak.
             credential_paths = [
                 "/root/.ssh", "/root/.aws", "/root/.kube",
                 "/home/.ssh", "/home/.aws", "/home/.kube",
                 "/run/docker.sock", "/run/containerd/containerd.sock",
-                "/etc/shadow", "/etc/passwd",
+                "/etc/shadow",
             ]
             for p in credential_paths:
                 if os.path.lexists(p):
                     hits.append(p)
+            # /etc/passwd: report content markers if present so the
+            # test can verify it is the sanitized file, not host data.
+            passwd_report = "ABSENT"
+            if os.path.lexists("/etc/passwd"):
+                try:
+                    content = pathlib.Path("/etc/passwd").read_text()
+                    names = [ln.split(":")[0] for ln in content.splitlines()
+                             if ln.strip() and ":" in ln]
+                    has_hashes = any("$" in ln for ln in content.splitlines())
+                    passwd_report = {
+                        "names": sorted(names),
+                        "hashes": has_hashes,
+                        "size": len(content),
+                    }
+                except (OSError, PermissionError):
+                    passwd_report = "UNREADABLE"
             env_hits = [k for k in os.environ
                         if k in ("AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
                                  "SSH_AUTH_SOCK", "DOCKER_HOST",
                                  "AWS_ACCESS_KEY_ID")]
-            return json.dumps({"path_hits": hits, "env_hits": env_hits})
+            return json.dumps({"path_hits": hits,
+                               "passwd": passwd_report,
+                               "env_hits": env_hits})
 
         run = _run_attack(fn)
         self.assertEqual(run.exit_code, 0, run.output)
@@ -609,6 +690,19 @@ class BuildScriptAttackTests(unittest.TestCase):
         self.assertEqual(data["path_hits"], [],
                          f"no credential paths must be reachable: "
                          f"{data['path_hits']}")
+        # /etc/passwd: either absent (minimal rootfs), unreadable, or
+        # the SANITIZED toolchain file - never host passwd data (host
+        # users beyond root/nobody, or password hashes).
+        pw = data["passwd"]
+        if isinstance(pw, dict):
+            self.assertFalse(pw["hashes"],
+                             "sanitized passwd must not contain hashes")
+            self.assertLessEqual(set(pw["names"]), {"root", "nobody"},
+                                 f"sanitized passwd must be root/nobody "
+                                 f"only: {pw['names']}")
+            self.assertLess(pw["size"], 500,
+                            f"sanitized passwd must be small: "
+                            f"{pw['size']} bytes")
         self.assertEqual(data["env_hits"], [],
                          f"no credential env vars must leak: "
                          f"{data['env_hits']}")

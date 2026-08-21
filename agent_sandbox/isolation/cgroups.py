@@ -35,8 +35,13 @@ Flow:
 4. ``prepare_session`` (supervisor side, in the delegated subtree): enable
    check on the parent subtree_control, create the session cgroup,
    resolve the io device, write all four limits, verify each by read-back.
-5. ``join_and_verify`` (sandbox PID 1 side, after rlimits): migrate PID 1
-   via cgroup.procs, verify membership + every limit read-back.
+5. ``join_and_verify`` (SUPERVISOR side, after sandbox PID 1 is reported
+   via the control pipe): migrate sandbox PID 1 (its HOST pid) into the
+   session cgroup via cgroup.procs, verify membership + every limit
+   read-back. The join is supervisor-side because the sandbox rootfs has
+   NO /sys by design (ADR-005) - PID 1 cannot reach the cgroupfs - and
+   this also guarantees the workload never touches the cgroupfs and
+   cannot alter its own limits.
 6. Workload descendants inherit membership across fork/exec (kernel
    semantics); verified via /proc/<pid>/cgroup.
 
@@ -362,10 +367,66 @@ def _enabled_in_parent(parent: str, state: CgroupV2State) -> list[str]:
     return list(REQUIRED_CONTROLLERS)
 
 
+def _verify_io_max_value(expected: str, actual: str) -> bool:
+    """io.max read-back verification tolerant of the kernel's normalized
+    representation. Linux appends 'riops=max wiops=max' when those fields
+    are not explicitly set, so exact-string equality is too strict for a
+    valid kernel response (observed on Ubuntu 24.04 / kernel 6.8 - never
+    exercisable before because HARDENED never reached an io.max write on
+    the prior substrates). Verification is SEMANTIC and fail-closed:
+    the device token must match exactly, every configured key=value must
+    be present with the identical value, every other token must be a
+    well-formed io.max field (rbps/wbps/riops/wiops with a numeric or
+    'max' value), and no duplicate keys are allowed. An arbitrary or
+    malformed read-back - wrong device, missing/different configured
+    value, unknown field, duplicate field - is NOT success."""
+    expected_tokens = expected.split()
+    actual_tokens = actual.split()
+    if (not expected_tokens or not actual_tokens
+            or actual_tokens[0] != expected_tokens[0]):
+        return False
+    want: dict[str, str] = {}
+    for token in expected_tokens[1:]:
+        key, sep, value = token.partition("=")
+        if not sep or not key or not value:
+            return False
+        want[key] = value
+    have: dict[str, str] = {}
+    for token in actual_tokens[1:]:
+        key, sep, value = token.partition("=")
+        if not sep or not key or not value:
+            return False
+        if key not in ("rbps", "wbps", "riops", "wiops"):
+            return False
+        if value != "max" and not value.isdigit():
+            return False
+        if key in have:
+            return False  # duplicate field - malformed read-back
+        have[key] = value
+    for key, value in want.items():
+        if have.get(key) != value:
+            return False
+    return True
+
+
+_IO_MAX_LIMIT = "io.max"
+
+
+def _readback_matches(name: str, expected: str, actual: str) -> bool:
+    """Limit read-back equality. Exact-string for pids/memory/cpu (the
+    kernel echoes them verbatim); io.max is verified semantically because
+    the kernel normalizes the read-back by appending riops=max/wiops=max
+    (``_verify_io_max_value``)."""
+    if name == _IO_MAX_LIMIT:
+        return _verify_io_max_value(expected, actual)
+    return actual == expected
+
+
 def _write_limits(path: str, policy: dict[str, str]) -> None:
     """Write every limit file and read it back; a write failure or a
-    read-back that differs from the exact value is a refusal (never \"the
-    write succeeded\")."""
+    read-back that does not match the expected value (exact for
+    pids/memory/cpu, semantic for io.max - the kernel normalizes the
+    io.max read-back) is a refusal (never \"the write succeeded\")."""
     for name, expected in policy.items():
         target = os.path.join(path, name)
         try:
@@ -380,7 +441,7 @@ def _write_limits(path: str, policy: dict[str, str]) -> None:
             raise NamespaceSetupError(
                 f"cannot read back {name} in session cgroup {path}: {e} "
                 "- fail closed, workload not executed") from e
-        if actual != expected:
+        if not _readback_matches(name, expected, actual):
             raise NamespaceSetupError(
                 f"{name} read-back is {actual!r}, expected {expected!r} "
                 f"in session cgroup {path} - fail closed, workload not "
@@ -439,10 +500,15 @@ def _verify_membership(path: str, pid: int) -> None:
 
 
 def join_and_verify(session: CgroupSession, pid: int) -> None:
-    """PID-1 side: migrate ``pid`` into the session cgroup via cgroup.procs
-    and verify membership + every limit read-back. Any unexpected state
-    refuses (fail closed) - the workload never runs outside the session
-    cgroup or with an unverified limit."""
+    """SUPERVISOR-side join (HARDENED): migrate ``pid`` - the HOST pid of
+    sandbox PID 1, reported via the control pipe - into the session
+    cgroup via cgroup.procs and verify membership + every limit
+    read-back. Runs host-side because the sandbox rootfs has no /sys by
+    design (ADR-005) and the supervisor owns the delegated subtree
+    (ADR-002: cgroup config is filesystem-permission work); the workload
+    never touches the cgroupfs and cannot alter its own limits. Any
+    unexpected state refuses (fail closed) - the workload never runs
+    outside the session cgroup or with an unverified limit."""
     try:
         _write_file(os.path.join(session.path, _PROCESSES), f"{pid}\n")
     except OSError as e:
@@ -456,7 +522,9 @@ def join_and_verify(session: CgroupSession, pid: int) -> None:
 def _verify_limits(path: str, limits: ResourceLimits,
                    io_device: tuple[int, int]) -> None:
     """Read every configured limit back from kernel state and require the
-    exact value (the join-time re-verification)."""
+    expected value - exact for pids/memory/cpu, semantic for io.max (the
+    kernel normalizes the io.max read-back; ``_readback_matches``). This
+    is the join-time re-verification."""
     policy = cgroup_policy(limits, io_device)
     for name, expected in policy.items():
         try:
@@ -465,7 +533,7 @@ def _verify_limits(path: str, limits: ResourceLimits,
             raise NamespaceSetupError(
                 f"cannot read {name} in session cgroup {path}: {e} - fail "
                 "closed, workload not executed") from e
-        if actual != expected:
+        if not _readback_matches(name, expected, actual):
             raise NamespaceSetupError(
                 f"{name} read-back is {actual!r}, expected {expected!r} "
                 f"in session cgroup {path} - fail closed, workload not "

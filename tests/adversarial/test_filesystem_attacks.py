@@ -84,6 +84,18 @@ class PathTraversalTests(unittest.TestCase):
     from the workload's root resolves to the sandbox root, not the
     host filesystem."""
 
+    def _passwd_sanitized_report(self, content):
+        """Return the sanitized markers of an /etc/passwd content read
+        from INSIDE the sandbox: True only if every entry is root or
+        nobody, no line carries a password hash, and the size is small
+        (the ADR-005 toolchain file). Used to prove a readable
+        /etc/passwd is the SANDBOX sanitized file, never host data."""
+        lines = [ln for ln in content.splitlines() if ln.strip()]
+        names = [ln.split(":")[0] for ln in lines if ":" in ln]
+        hashes = any("$" in ln for ln in lines)
+        return (set(names) <= {"root", "nobody"} and not hashes
+                and len(content) < 500)
+
     def _traversal_payload(self, state, fs):
         results = {}
         # Attempt various traversal patterns to reach host paths.        # Paths that don't exist in the sandbox rootfs.
@@ -92,9 +104,23 @@ class PathTraversalTests(unittest.TestCase):
         for path, label in attempts:
             try:
                 data = pathlib.Path(path).read_text()
-                results[label] = f"LEAKED: {len(data)} bytes"
+                if path.endswith("/etc/passwd") and not data:
+                    results[label] = "PASSWD:BLOCKED: empty"
+                elif path.endswith("/etc/passwd"):
+                    # Readable /etc/passwd is only acceptable if it is
+                    # the SANITIZED toolchain file - never host data.
+                    if self._passwd_sanitized_report(data):
+                        results[label] = (f"PASSWD:SANDBOX-SANITIZED: "
+                                          f"{len(data)} bytes")
+                    else:
+                        results[label] = f"PASSWD:LEAKED: {len(data)} bytes"
+                else:
+                    results[label] = f"LEAKED: {len(data)} bytes"
             except (OSError, PermissionError) as e:
-                results[label] = f"BLOCKED: {e}"
+                if path.endswith("/etc/passwd"):
+                    results[label] = f"PASSWD:BLOCKED: {e}"
+                else:
+                    results[label] = f"BLOCKED: {e}"
         results["marker"] = "TRAVERSAL-EXECUTED"
         return json.dumps(results)
 
@@ -109,29 +135,58 @@ class PathTraversalTests(unittest.TestCase):
         for label, result in data.items():
             if label == "marker":
                 continue
-            self.assertIn("BLOCKED", result,
-                          f"traversal {label} must be blocked: {result}")
+            # /etc/passwd attempts may read the SANITIZED toolchain file
+            # (root/nobody only - the payload proved it is not host data)
+            # or be blocked; every other target must be blocked outright.
+            if result.startswith("PASSWD:"):
+                self.assertTrue(
+                    "BLOCKED" in result or "SANDBOX-SANITIZED" in result,
+                    f"traversal {label} must be blocked or sanitized-only: "
+                    f"{result}")
+            else:
+                self.assertIn("BLOCKED", result,
+                              f"traversal {label} must be blocked: {result}")
 
     @unittest.skipUnless(LINUX, "real sandbox requires Linux")
     def test_traversal_no_host_file_read(self):
-        """T-001: Verify no host file content is readable."""
+        """T-001: Verify no HOST file content is readable."""
         def fn(state, fs):
             # Read every traversal target from inside the sandbox.
             hits = {}
             for p in ["/etc/passwd", "/etc/shadow", "/root/.ssh/id_rsa"]:
                 try:
-                    hits[p] = len(pathlib.Path(p).read_text())
+                    content = pathlib.Path(p).read_text()
+                    hits[p] = {"size": len(content), "content": content}
                 except (OSError, PermissionError):
-                    hits[p] = 0
+                    hits[p] = {"size": 0, "content": ""}
             return json.dumps(hits)
 
         run = _run_attack(fn)
         self.assertEqual(run.exit_code, 0, run.output)
         data = json.loads(run.output)
-        # All host paths must be inaccessible (0 bytes or error).
-        for path, size in data.items():
-            self.assertEqual(size, 0,
-                             f"{path} must be unreadable (got {size} bytes)")
+        # /etc/shadow and /root/.ssh/id_rsa must be inaccessible (0
+        # bytes or error). /etc/passwd may be the SANITIZED toolchain
+        # file (root/nobody, no hashes) - never host passwd data.
+        for path, report in data.items():
+            if path == "/etc/passwd":
+                if report["size"]:
+                    lines = [ln for ln in
+                             report["content"].splitlines() if ln.strip()]
+                    names = [ln.split(":")[0] for ln in lines
+                             if ":" in ln]
+                    self.assertFalse(any("$" in ln for ln in lines),
+                                     "/etc/passwd must not expose hashes")
+                    self.assertLessEqual(
+                        set(names), {"root", "nobody"},
+                        f"/etc/passwd must be sanitized (root/nobody "
+                        f"only), got: {names}")
+                    self.assertLess(report["size"], 500,
+                                    f"sanitized passwd must be small: "
+                                    f"{report['size']} bytes")
+            else:
+                self.assertEqual(report["size"], 0,
+                                 f"{path} must be unreadable "
+                                 f"(got {report['size']} bytes)")
 
 
 # ---------------------------------------------------------------------------

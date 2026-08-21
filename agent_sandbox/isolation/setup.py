@@ -70,9 +70,13 @@ the supervisor prepares the session cgroup HOST-SIDE in the delegated
 subtree before entering the boundary - cgroup v2 identity, the four
 required controllers (pids/memory/cpu/io), writable-subtree probe,
 session creation, io.max backing-device resolution (kernel state, never
-guessed), all four limits written + read-back verified - and PID 1 then
-joins it AFTER the rlimits (cgroup.procs migration + membership + limit
-re-verification). Delegation unavailable, a missing controller, an
+guessed), all four limits written + read-back verified - and the
+SUPERVISOR then joins sandbox PID 1 into it AFTER the rlimits (host-side
+cgroup.procs migration + membership + limit re-verification). PID 1
+cannot reach the cgroupfs itself (the rootfs has no /sys by design,
+ADR-005); the supervisor-side join also guarantees the workload never
+touches the cgroupfs and cannot alter its own limits. Delegation
+unavailable, a missing controller, an
 unresolvable io device, or any establishment/verification failure makes
 HARDENED REFUSE AT RESOURCES with the precise reason - never a partial
 success (RESTRICTED completes its RESOURCES stage with rlimits only,
@@ -205,6 +209,48 @@ def enter_all_namespaces() -> NamespaceState:
     return NamespaceState(userns=state, host_ns=host_ns, sandbox_ns=sandbox_ns)
 
 
+def _toolchain_dir() -> str | None:
+    """The curated toolchain artifact path (ADR-005 read-only system
+    layers) from the AGENT_SANDBOX_TOOLCHAIN env var; None = no system
+    layers (the empty-placeholder rootfs). Read HOST-side only - the
+    sandbox environment is sanitized independently and the workload
+    never sees this variable. A configured-but-invalid path is a
+    refusal in the filesystem stage (deterministic - never a silent
+    partial toolchain)."""
+    return os.environ.get("AGENT_SANDBOX_TOOLCHAIN")
+
+
+def _sync_wait(fd: int, what: str) -> bool:
+    """Wait for a single status byte on a one-directional sync pipe (the
+    caller is the SOLE reader; b'1' = success, b'0' or EOF = failure).
+    Returns True only on b'1' - everything else fails closed. The pipe
+    wiring guarantees no hang: the peer is the sole writer, so its exit
+    (any path) delivers EOF."""
+    try:
+        data = os.read(fd, 1)
+    except OSError:
+        return False
+    return data == b"1"
+
+
+def _flush_io_before_fork() -> None:
+    """Flush the supervisor's buffered stdout/stderr immediately before
+    every fork. WITHOUT this, the sandbox child inherits the pre-fork
+    stdio buffer across fork; when the workload later prints, the
+    inherited buffer (e.g. a server's or test runner's buffered output)
+    flushes into the workload's CAPTURED output pipe - supervisor output
+    leaking into sandbox workload output (fork-inherited stdio buffer
+    pollution, empirically isolated on Ubuntu 24.04/kernel 6.8). Flushing
+    here guarantees the child inherits a clean buffer; output semantics
+    beyond removing inherited pre-fork buffers are unchanged. Flush
+    failures (e.g. closed stream) must never abort the run."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+
+
 def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                    limits: ResourceLimits | None = None,
                    cgroup_session=None,
@@ -224,9 +270,13 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     rlimits AFTER the seccomp install and BEFORE the workload fn
     (prlimit64 is allowlisted - no filter change needed).
     With ``cgroup_session`` (Step 10, HARDENED): a session cgroup prepared
-    host-side by the supervisor in the delegated subtree; PID 1 migrates
-    itself into it (cgroup.procs) after the rlimits and verifies
-    membership + all four limit read-backs BEFORE the workload fn.
+    host-side by the supervisor in the delegated subtree; the SUPERVISOR
+    joins sandbox PID 1 into it (host-side cgroup.procs migration) and
+    verifies membership + all four limit read-backs - before releasing
+    PID 1 via the go pipe, so the workload fn never runs before the join.
+    PID 1 cannot reach the cgroupfs (the rootfs has no /sys by design,
+    ADR-005); the supervisor-side join also guarantees the workload never
+    touches the cgroupfs and cannot alter its own limits.
     With ``env_allowlist`` (Step 11): PID 1 constructs the approved
     six-variable sandbox environment (PATH/HOME/TMPDIR/LANG/LC_ALL/TERM -
     host env NEVER inherited, S-034) after the cgroup join and verifies
@@ -267,11 +317,33 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     # becomes the namespace init) so the supervisor can terminate the
     # WHOLE workload tree - never just the immediate child (S-014).
     ctl_r, ctl_w = os.pipe()
+    # One-directional sync pipes for the pre-pivot /proc handshake: PID 1
+    # mounts the rootfs /proc BEFORE the setup child pivots (the only
+    # ordering that works inside a user namespace on mainline kernels - a
+    # procfs mount attempted after pivot_root + detach fails with EPERM),
+    # signals completion, waits for the pivot, then verifies the live
+    # /proc. Each side is the SOLE writer of its pipe (grand -> ack,
+    # child A -> pivot), so a peer exit delivers EOF and can never hang.
+    # The curated toolchain artifact (ADR-005), resolved host-side before
+    # any fork so child A and PID 1 inherit it for mounting/verification.
+    toolchain = _toolchain_dir()
+    mount_ack_r, mount_ack_w = os.pipe()
+    pivot_done_r, pivot_done_w = os.pipe()
+    # Go pipe (HARDENED cgroup join): the supervisor signals sandbox PID 1
+    # that the host-side session-cgroup join completed and was verified,
+    # so the workload fn never runs before the cgroup stage. Wiring:
+    # supervisor -> grand (through child A); grand is the SOLE reader and
+    # the supervisor the SOLE writer (child A and grand close their write
+    # copies), so a supervisor exit is EOF to grand's wait.
+    go_r, go_w = os.pipe()
+    _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
         # Child A: enters the namespaces, establishes the filesystem
-        # boundary (if a rootfs is given), then forks so its child becomes
-        # PID 1 of the new PID namespace (documented PID semantics).
+        # mounts (if a rootfs is given), then forks so its child becomes
+        # PID 1 of the new PID namespace (documented PID semantics). The
+        # pivot + old-root detach happen AFTER PID 1 has mounted the
+        # rootfs /proc (see the grand comment).
         os.close(out_r)
         os.close(ctl_r)
         try:
@@ -280,13 +352,31 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             # inside the pivoted rootfs; the tuple is inherited into PID 1.
             program = seccomp_mod.build_program()
             state = enter_all_namespaces()
-            fs_state = None
             if rootfs_state is not None:
-                fs_state = fs_mod.establish_rootfs(rootfs_state, disk_mb)
+                fs_mod.prepare_rootfs(rootfs_state, disk_mb, toolchain)
         except BaseException as e:  # noqa: BLE001 - report, don't propagate across fork
             os.write(out_w, f"FAIL setup: {type(e).__name__}: {e}\n".encode())
             os._exit(1)
+        _flush_io_before_fork()
         grand = os.fork()
+        if grand != 0:
+            # Child A reads the proc-mount ack and writes the pivot-done
+            # ack, and never uses the go pipe. Close the ends grand owns
+            # ONLY in child A (grand must keep its live copies of the ends
+            # it writes/reads, and its own branch closes the ends it does
+            # not use), so grand's exit is EOF to these reads.
+            os.close(mount_ack_w)
+            os.close(pivot_done_r)
+            os.close(go_r)
+            os.close(go_w)
+            # Report sandbox PID 1 to the supervisor at the EARLIEST safe
+            # point (right after the fork, before the pivot): the HARDENED
+            # supervisor joins it into the session cgroup host-side before
+            # any workload code can run, and the termination target is
+            # available earlier for the timeout path. The pid is child A's
+            # view of grand = the HOST pid of sandbox PID 1.
+            os.write(ctl_w, str(grand).encode())
+            os.close(ctl_w)
         if grand == 0:
             # Child B: PID 1 in the new PID namespace - runs the workload fn.
             os.dup2(out_w, 1)
@@ -295,16 +385,71 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             # Child B inherits ctl_w from child A (child A closed ctl_r
             # BEFORE forking grand, so ctl_r was never inherited here).
             os.close(ctl_w)
-            # PID 1 mounts + verifies the sandbox proc view FIRST (/proc
-            # with hidepid=2 - a procfs mount shows the PID namespace of
-            # the process that mounts it, so only PID 1 can show the
-            # sandbox's own processes; in the rootfs path /proc is not
-            # mounted in the new root until this point, and the network
-            # state verification reads /proc/self/net/*), then verifies
-            # the network deny-by-construction state. Any failure =
-            # refusal (never a silent continue on a partial boundary).
+            # Child B owns the proc-mount ack (write) and the pivot-done
+            # wait (read); close the ends child A owns so child A's exit
+            # is EOF to the pivot wait.
+            os.close(mount_ack_r)
+            os.close(pivot_done_w)
+            os.close(go_w)
+            # PID 1 mounts + verifies the sandbox proc view at the rootfs
+            # /proc BEFORE the setup child pivots (/proc with hidepid=2 -
+            # a procfs mount shows the PID namespace of the process that
+            # mounts it, so only PID 1 can show the sandbox's own
+            # processes). This ordering is REQUIRED on mainline kernels:
+            # a procfs mount attempted AFTER pivot_root + old-root detach
+            # inside a user namespace fails with EPERM (verified on
+            # Ubuntu 24.04/kernel 6.8; the WSL2 kernel behind the Docker
+            # evidence tolerated the post-pivot mount). The pre-pivot
+            # mount survives the pivot and becomes the live /proc, which
+            # is then verified (plus the network deny-by-construction
+            # state, which reads /proc/self/net/*). Any failure = refusal
+            # (never a silent continue on a partial boundary) and is
+            # signaled to the setup child.
+            # The mount-ack / pivot-done handshake exists ONLY for the
+            # pre-pivot proc mount (rootfs mode). In namespaces-only mode
+            # (rootfs_state is None) there is no proc mount and no pivot,
+            # and child A never reads mount_ack_r nor writes
+            # pivot_done_w - so PID 1 must not touch either pipe here or
+            # its write hits a closed read end (BrokenPipeError) and its
+            # pivot wait hangs on an EOF that never comes as a b'1'
+            # (both would refuse a perfectly valid namespaces-only run).
+            if rootfs_state is not None:
+                try:
+                    problems = fs_mod.mount_sandbox_proc_prepivot()
+                    if problems:
+                        raise NamespaceSetupError(
+                            "proc boundary pre-pivot verification failed: "
+                            + "; ".join(problems))
+                    os.write(mount_ack_w, b"1")
+                except BaseException as e:  # noqa: BLE001
+                    print(f"FAIL setup: {type(e).__name__}: {e}",
+                          file=sys.stderr)
+                    sys.stderr.flush()
+                    try:
+                        os.write(mount_ack_w, b"0")
+                    except OSError:
+                        pass
+                    os._exit(1)
+                if not _sync_wait(pivot_done_r, "pivot"):
+                    print("FAIL setup: pivot_root + old-root detach did not "
+                          "complete", file=sys.stderr)
+                    sys.stderr.flush()
+                    os._exit(1)
+            os.chdir("/")
+            os.close(mount_ack_w)
+            os.close(pivot_done_r)
             try:
-                if fs_state is not None:
+                # Post-pivot (live /proc): the root boundary verification
+                # (root identity, cwd, /workspace, /tmp tmpfs, /dev
+                # inventory, host paths absent) and the sandbox proc view
+                # verification (procfs at /proc with hidepid=2 + flags,
+                # only PID 1 visible, /dev unchanged, /sys absent), then
+                # the network deny-by-construction state. Any failure =
+                # refusal (never a silent continue on a partial boundary).
+                fs_state = None
+                if rootfs_state is not None:
+                    fs_state = fs_mod._verify_root_boundary(
+                        rootfs_state, toolchain)
                     _mount_and_verify_proc()
                 net_mod.verify_deny_by_construction(
                     state.host_ns.get("net", ""))
@@ -322,7 +467,18 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 if limits is not None:
                     resources_mod.establish_and_verify_rlimits(limits)
                 if cgroup_session is not None:
-                    cgroups_mod.join_and_verify(cgroup_session, os.getpid())
+                    # The HARDENED session-cgroup join is done by the
+                    # SUPERVISOR host-side (the rootfs has no /sys by
+                    # design, ADR-005, so PID 1 cannot reach the cgroupfs;
+                    # see the supervisor side below). Wait for the go
+                    # signal: the workload fn must NEVER run before the
+                    # join + limit verification completed. Fail closed if
+                    # it never arrives (EOF or b'0').
+                    if not _sync_wait(go_r, "cgroup join"):
+                        raise NamespaceSetupError(
+                            "cgroup join did not complete (no supervisor "
+                            "go signal) - fail closed, workload not executed")
+                    os.close(go_r)
                 # Step 11: sanitize the environment in PID 1 AFTER the
                 # resource stage and BEFORE the workload fn - construct
                 # the approved six variables (host env never inherited,
@@ -361,17 +517,43 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 print(f"FAIL workload: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
                 os._exit(1)
-        # Child A: report sandbox PID 1 to the supervisor, then wait for
-        # it and exit with its status.
-        os.write(ctl_w, str(grand).encode())
-        os.close(ctl_w)
+        # Child A: wait for PID 1's pre-pivot proc mount, complete the
+        # pivot + old-root detach, signal PID 1, then wait for it and
+        # exit with its status (sandbox PID 1 was reported to the
+        # supervisor right after the fork, above).
+        if rootfs_state is not None:
+            if not _sync_wait(mount_ack_r, "proc mount"):
+                os.write(out_w, b"FAIL setup: proc mount did not complete\n")
+                os._exit(1)
+            try:
+                fs_mod.pivot_and_detach()
+            except BaseException as e:  # noqa: BLE001
+                os.write(out_w,
+                         f"FAIL setup: {type(e).__name__}: {e}\n".encode())
+                try:
+                    os.write(pivot_done_w, b"0")
+                except OSError:
+                    pass
+                os._exit(1)
+            os.write(pivot_done_w, b"1")
+        os.close(mount_ack_r)
+        os.close(pivot_done_w)
+        # The sandbox PID 1 was reported to the supervisor right after the
+        # fork (above); now wait for it and exit with its status.
         _, status = os.waitpid(grand, 0)
         os._exit(os.waitstatus_to_exitcode(status))
 
     # Supervisor side: learn sandbox PID 1 (the namespace init - the
-    # whole workload tree), collect output, reap, verify absence.
+    # whole workload tree), collect output, reap, verify absence. The
+    # sync pipes are private to the children - close the supervisor's
+    # copies.
     os.close(out_w)
     os.close(ctl_w)
+    os.close(mount_ack_r)
+    os.close(mount_ack_w)
+    os.close(pivot_done_r)
+    os.close(pivot_done_w)
+    os.close(go_r)
     try:
         raw = os.read(ctl_r, 64)
     finally:
@@ -380,19 +562,42 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
         sandbox_pid1 = int(raw.strip().split()[0])
     except (ValueError, IndexError):
         sandbox_pid1 = -1  # child A died before reporting - fail closed
-    bound = output_mb if output_mb is not None else (
-        limits.output_mb if limits is not None else None)
-    if bound is None:
-        # Namespace-only test seam (no resource stage): unbounded read.
-        output = b""
-        while True:
-            chunk = os.read(out_r, 65536)
-            if not chunk:
-                break
-            output += chunk
-        _, status = os.waitpid(pid, 0)
-        return _finish_run(status, output.decode(errors="replace"),
-                           sandbox_pid1, cgroup_session)
+    # HARDENED (S-012/S-027, ADR-007): the supervisor joins sandbox PID 1
+    # into the session cgroup HOST-SIDE, BEFORE the workload fn may run.
+    # The sandbox rootfs has no /sys by design (ADR-005), so PID 1 cannot
+    # reach the cgroupfs itself; the supervisor legitimately owns the
+    # delegated subtree (ADR-002: cgroup config inside a delegated subtree
+    # is filesystem-permission work). This also means the workload NEVER
+    # touches the cgroupfs and cannot alter its own limits. Fail-closed:
+    # any join/verification failure terminates the sandbox tree and
+    # refuses the run. On success, the go signal releases sandbox PID 1
+    # to run the workload.
+    if cgroup_session is not None:
+        join_kill_target = sandbox_pid1 if sandbox_pid1 >= 1 else pid
+        try:
+            if sandbox_pid1 < 1:
+                raise NamespaceSetupError(
+                    "cgroup join impossible: sandbox PID 1 unknown (the "
+                    "setup child died before reporting it) - fail closed, "
+                    "workload not executed")
+            cgroups_mod.join_and_verify(cgroup_session, sandbox_pid1)
+        except BaseException as e:  # noqa: BLE001 - fail closed
+            try:
+                lifecycle_mod.terminate_tree(join_kill_target,
+                                             cgroup_session, grace=0.0)
+            except Exception:  # noqa: BLE001 - best-effort during refusal
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+            raise NamespaceSetupError(
+                f"cgroup join failed: {e} - session terminated, fail "
+                "closed, workload not executed")
+        os.write(go_w, b"1")
+        os.close(go_w)
+    else:
+        os.close(go_w)
     # S-037 (Step 13) + S-036 (Step 14): bounded read with an external
     # wall-clock deadline. On truncation OR timeout the supervisor
     # terminates the session (closes the read end + kills the SANDBOX
@@ -400,34 +605,60 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     # tree, S-014). Further workload writes fail with EPIPE/SIGPIPE. The
     # workload cannot bypass the bound or the deadline: the pipe is the
     # only channel, and the deadline lives only in this supervisor
-    # process.
-    wall = wall_time_seconds if wall_time_seconds is not None else (
-        limits.wall_time_seconds if limits is not None else None)
-    limit_bytes = bound * output_mod.MIB
-    # Step 15: the termination target is SANDBOX PID 1 (the namespace
-    # init), never the immediate child - killing the init makes the
-    # kernel terminate the entire namespace (S-014, ADR-011).
-    kill_target = sandbox_pid1 if sandbox_pid1 >= 1 else pid
-    if wall is None:
-        # Bound-only call (Step 13 test seam): no deadline configured.
-        data, truncated = output_mod.collect_bounded(
-            out_r, kill_target, limit_bytes)
+    # process. The output read end (out_r) is closed in a finally on
+    # EVERY path (success, truncation, timeout, exceptional) - a leaked
+    # read end would accumulate descriptors across repeated execute()
+    # calls in a long-lived supervisor.
+    try:
+        bound = output_mb if output_mb is not None else (
+            limits.output_mb if limits is not None else None)
+        if bound is None:
+            # Namespace-only test seam (no resource stage): unbounded read.
+            output = b""
+            while True:
+                chunk = os.read(out_r, 65536)
+                if not chunk:
+                    break
+                output += chunk
+            _, status = os.waitpid(pid, 0)
+            return _finish_run(status, output.decode(errors="replace"),
+                               sandbox_pid1, cgroup_session)
+        wall = wall_time_seconds if wall_time_seconds is not None else (
+            limits.wall_time_seconds if limits is not None else None)
+        limit_bytes = bound * output_mod.MIB
+        # Step 15: the termination target is SANDBOX PID 1 (the namespace
+        # init), never the immediate child - killing the init makes the
+        # kernel terminate the entire namespace (S-014, ADR-011).
+        kill_target = sandbox_pid1 if sandbox_pid1 >= 1 else pid
+        if wall is None:
+            # Bound-only call (Step 13 test seam): no deadline configured.
+            data, truncated = output_mod.collect_bounded(
+                out_r, kill_target, limit_bytes)
+            _, status = os.waitpid(pid, 0)
+            text = data.decode(errors="replace")
+            if truncated:
+                text += output_mod.truncation_notice(bound)
+            return _finish_run(status, text, sandbox_pid1, cgroup_session,
+                               truncated=truncated)
+        data, truncated, timed_out = timeout_mod.collect_session_output(
+            out_r, kill_target, limit_bytes, wall)
         _, status = os.waitpid(pid, 0)
         text = data.decode(errors="replace")
         if truncated:
             text += output_mod.truncation_notice(bound)
+        if timed_out:
+            text += timeout_mod.timeout_notice(wall)
         return _finish_run(status, text, sandbox_pid1, cgroup_session,
-                           truncated=truncated)
-    data, truncated, timed_out = timeout_mod.collect_session_output(
-        out_r, kill_target, limit_bytes, wall)
-    _, status = os.waitpid(pid, 0)
-    text = data.decode(errors="replace")
-    if truncated:
-        text += output_mod.truncation_notice(bound)
-    if timed_out:
-        text += timeout_mod.timeout_notice(wall)
-    return _finish_run(status, text, sandbox_pid1, cgroup_session,
-                       truncated=truncated, timed_out=timed_out)
+                           truncated=truncated, timed_out=timed_out)
+    finally:
+        # On the truncation/timeout paths the collection already closed
+        # the read end (the termination sequence closes it to force
+        # EPIPE/SIGPIPE on the workload); tolerate that - the guarantee
+        # is that out_r is closed on EVERY path, not closed exactly once.
+        try:
+            os.close(out_r)
+        except OSError:
+            pass
 
 
 def _finish_run(status: int, text: str, sandbox_pid1: int,
@@ -502,6 +733,7 @@ def _probe_impl() -> StageCheck:
             reason="namespace probe requires Linux with os.fork (fail closed "
                    "- namespaces cannot be established on this platform)")
     read_fd, write_fd = os.pipe()
+    _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
@@ -510,6 +742,7 @@ def _probe_impl() -> StageCheck:
         except BaseException as e:  # noqa: BLE001
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
+        _flush_io_before_fork()
         grand = os.fork()
         if grand == 0:
             # PID 1: verify the boundary from inside and report the verdict
@@ -552,11 +785,12 @@ def _namespaces_guard(config) -> StageCheck:
 
 
 def _mount_and_verify_proc() -> None:
-    """PID-1-side: mount procfs (hidepid=2) and verify the sandbox proc
-    view. Raises NamespaceSetupError on verification failure - the caller
-    (run_in_sandbox PID 1) reports it and refuses; never a silent
-    continue with a partially configured filesystem."""
-    problems = fs_mod.mount_sandbox_proc()
+    """PID-1-side POST-pivot verification of the sandbox proc view (the
+    procfs was mounted pre-pivot by ``mount_sandbox_proc_prepivot``; this
+    verifies the live /proc). Raises NamespaceSetupError on verification
+    failure - the caller (run_in_sandbox PID 1) reports it and refuses;
+    never a silent continue with a partially configured filesystem."""
+    problems = fs_mod.verify_sandbox_proc()
     if problems:
         raise NamespaceSetupError(
             "proc/dev/sys boundary verification failed: " + "; ".join(problems))
@@ -565,13 +799,13 @@ def _mount_and_verify_proc() -> None:
 def _fs_pid1_verification(state: NamespaceState,
                           fs: fs_mod.FilesystemState) -> str:
     """PID-1-side verification of the filesystem boundary (runs inside the
-    new root, after the sandbox proc view is mounted). Returns "OK" or
-    "FAIL <detail>" - never a silent pass."""
+    new root, after the pre-pivot-mounted sandbox proc view is live).
+    Returns "OK" or "FAIL <detail>" - never a silent pass."""
     problems: list[str] = []
     try:
-        problems.extend(fs_mod.mount_sandbox_proc())
-    except BaseException as e:  # noqa: BLE001 - mount failure is a refusal
-        problems.append(f"proc mount failed: {type(e).__name__}: {e}")
+        problems.extend(fs_mod.verify_sandbox_proc())
+    except BaseException as e:  # noqa: BLE001 - verification failure is a refusal
+        problems.append(f"proc view verification failed: {type(e).__name__}: {e}")
     cur = os.stat("/")
     if (cur.st_dev, cur.st_ino) != fs.root_identity:
         problems.append(
@@ -580,7 +814,16 @@ def _fs_pid1_verification(state: NamespaceState,
         problems.append(f"cwd is {os.getcwd()!r}, expected /")
     if not os.path.isdir("/workspace"):
         problems.append("/workspace missing in PID 1")
-    hits = fs_mod._probe_absent(fs_mod.HOST_ABSENT_PATHS)
+    # With the curated toolchain, /etc/passwd is PROVIDED as the minimal
+    # SANITIZED file (root + nobody only - NSS requires it); its absence
+    # check is replaced by the verified-content check inside
+    # _verify_root_boundary (toolchain-aware). Without a toolchain the
+    # file must not exist, exactly as before.
+    absent_paths = fs_mod.HOST_ABSENT_PATHS
+    if _toolchain_dir() is not None:
+        absent_paths = tuple(
+            p for p in absent_paths if p != "/etc/passwd")
+    hits = fs_mod._probe_absent(absent_paths)
     if hits:
         problems.append("host path(s) reachable in PID 1: " + ", ".join(hits))
     if problems:
@@ -612,27 +855,93 @@ def _filesystem_probe_impl(config) -> StageCheck:
                           reason=f"rootfs build failed: {e} - fail closed, "
                                  "workload not executed")
     read_fd, write_fd = os.pipe()
+    # One-directional sync pipes for the pre-pivot /proc handshake (the
+    # same wiring as run_in_sandbox - see there): PID 1 mounts the rootfs
+    # /proc BEFORE the setup child pivots, signals completion, waits for
+    # the pivot, then verifies the live /proc.
+    mount_ack_r, mount_ack_w = os.pipe()
+    pivot_done_r, pivot_done_w = os.pipe()
+    _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
         try:
             state = enter_all_namespaces()
-            fs_state = fs_mod.establish_rootfs(rootfs_state, config.resources.disk_mb)
+            fs_mod.prepare_rootfs(rootfs_state, config.resources.disk_mb,
+                                  _toolchain_dir())
         except BaseException as e:  # noqa: BLE001
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
+        _flush_io_before_fork()
         grand = os.fork()
+        if grand != 0:
+            # Child A reads the proc-mount ack and writes the pivot-done
+            # ack. Close the ends grand owns ONLY in child A (grand must
+            # keep its live copies of the ends it writes/reads, and its
+            # own branch closes the ends it does not use), so grand's exit
+            # is EOF to these reads.
+            os.close(mount_ack_w)
+            os.close(pivot_done_r)
         if grand == 0:
-            # PID 1: verify the filesystem boundary from inside the new root.
+            # PID 1: mount the rootfs /proc pre-pivot (required ordering
+            # on mainline kernels - a procfs mount after pivot+detach in
+            # a user namespace fails EPERM), then verify the filesystem
+            # boundary from inside the new root.
+            os.close(mount_ack_r)
+            os.close(pivot_done_w)
             try:
+                problems = fs_mod.mount_sandbox_proc_prepivot()
+                if problems:
+                    raise NamespaceSetupError(
+                        "proc boundary pre-pivot verification failed: "
+                        + "; ".join(problems))
+                os.write(mount_ack_w, b"1")
+            except BaseException as e:  # noqa: BLE001
+                os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
+                try:
+                    os.write(mount_ack_w, b"0")
+                except OSError:
+                    pass
+                os._exit(0)
+            if not _sync_wait(pivot_done_r, "pivot"):
+                os.write(write_fd, b"FAIL pivot_root + old-root detach did "
+                                   b"not complete")
+                os._exit(0)
+            os.chdir("/")
+            os.close(mount_ack_w)
+            os.close(pivot_done_r)
+            try:
+                fs_state = fs_mod._verify_root_boundary(
+                    rootfs_state, _toolchain_dir())
                 verdict = _fs_pid1_verification(state, fs_state)
                 os.write(write_fd, verdict.encode())
             except BaseException as e:  # noqa: BLE001
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
             os._exit(0)
+        # Child A: wait for the pre-pivot proc mount, complete the pivot
+        # + old-root detach, signal PID 1, then wait for it.
+        if not _sync_wait(mount_ack_r, "proc mount"):
+            os.write(write_fd, b"FAIL proc mount did not complete")
+            os._exit(1)
+        try:
+            fs_mod.pivot_and_detach()
+        except BaseException as e:  # noqa: BLE001
+            os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
+            try:
+                os.write(pivot_done_w, b"0")
+            except OSError:
+                pass
+            os._exit(1)
+        os.write(pivot_done_w, b"1")
+        os.close(mount_ack_r)
+        os.close(pivot_done_w)
         _, status = os.waitpid(grand, 0)
         os._exit(0 if os.waitstatus_to_exitcode(status) == 0 else 1)
     os.close(write_fd)
+    os.close(mount_ack_r)
+    os.close(mount_ack_w)
+    os.close(pivot_done_r)
+    os.close(pivot_done_w)
     data = b""
     while True:
         chunk = os.read(read_fd, 65536)
@@ -677,6 +986,7 @@ def _network_probe_impl(config) -> StageCheck:
             reason="network probe requires Linux with os.fork (fail closed "
                    "- the netns boundary cannot be established here)")
     read_fd, write_fd = os.pipe()
+    _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
@@ -686,6 +996,7 @@ def _network_probe_impl(config) -> StageCheck:
         except BaseException as e:  # noqa: BLE001
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
+        _flush_io_before_fork()
         grand = os.fork()
         if grand == 0:
             # PID 1: verify the deny-by-construction state from inside the
@@ -742,6 +1053,7 @@ def _privileges_probe_impl(config) -> StageCheck:
             reason="privileges probe requires Linux with os.fork (fail "
                    "closed - no_new_privs cannot be established here)")
     read_fd, write_fd = os.pipe()
+    _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
@@ -750,6 +1062,7 @@ def _privileges_probe_impl(config) -> StageCheck:
         except BaseException as e:  # noqa: BLE001
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
+        _flush_io_before_fork()
         grand = os.fork()
         if grand == 0:
             # PID 1: establish no_new_privs, then perform the capability
@@ -812,6 +1125,7 @@ def _seccomp_probe_impl(config) -> StageCheck:
             reason="seccomp probe requires Linux with os.fork (fail "
                    "closed - the filter cannot be installed here)")
     read_fd, write_fd = os.pipe()
+    _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
@@ -821,6 +1135,7 @@ def _seccomp_probe_impl(config) -> StageCheck:
         except BaseException as e:  # noqa: BLE001
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
+        _flush_io_before_fork()
         grand = os.fork()
         if grand == 0:
             # PID 1: no_new_privs -> capability reduction -> seccomp
@@ -893,6 +1208,7 @@ def _resources_probe_impl(config) -> StageCheck:
             reason="resources probe requires Linux with os.fork (fail "
                    "closed - rlimits cannot be established here)")
     read_fd, write_fd = os.pipe()
+    _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
@@ -913,6 +1229,7 @@ def _resources_probe_impl(config) -> StageCheck:
         except BaseException as e:  # noqa: BLE001
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
+        _flush_io_before_fork()
         grand = os.fork()
         if grand == 0:
             # PID 1: no_new_privs -> capability reduction -> seccomp
@@ -1004,6 +1321,7 @@ def _environment_probe_impl(config) -> StageCheck:
     environment is never mutated - the child replaces only its own).
     """
     read_fd, write_fd = os.pipe()
+    _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
@@ -1079,6 +1397,7 @@ def _execution_probe_impl(config) -> StageCheck:
     #    the session terminated (the flooder must not survive).
     try:
         r, w = os.pipe()
+        _flush_io_before_fork()
         flooder = os.fork()
         if flooder == 0:
             os.close(r)
@@ -1106,6 +1425,7 @@ def _execution_probe_impl(config) -> StageCheck:
     #    expiry - the deadline aborts the session, never a status flag.
     try:
         r, w = os.pipe()
+        _flush_io_before_fork()
         silent = os.fork()
         if silent == 0:
             os.close(r)

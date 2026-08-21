@@ -441,6 +441,59 @@ class CgroupFailureTests(unittest.TestCase):
         self.assertIn("cannot read pids.max", str(cm.exception))
 
 
+class IoMaxReadbackTests(unittest.TestCase):
+    """io.max read-back verification tolerates the kernel's NORMALIZED
+    representation (Linux appends 'riops=max wiops=max' when those fields
+    are not explicitly set - observed on Ubuntu 24.04 / kernel 6.8) while
+    still failing closed on any wrong/malformed state: never an arbitrary
+    read-back treated as success."""
+
+    EXPECTED = "8:17 rbps=1073741824 wbps=1073741824"
+
+    def test_kernel_normalized_readback_accepted(self):
+        # The kernel appends riops=max wiops=max when not explicitly set.
+        actual = ("8:17 rbps=1073741824 wbps=1073741824 "
+                  "riops=max wiops=max")
+        self.assertTrue(cg._verify_io_max_value(self.EXPECTED, actual))
+
+    def test_plain_echo_readback_accepted(self):
+        self.assertTrue(cg._verify_io_max_value(self.EXPECTED, self.EXPECTED))
+
+    def test_wrong_device_refused(self):
+        self.assertFalse(cg._verify_io_max_value(
+            self.EXPECTED,
+            "8:18 rbps=1073741824 wbps=1073741824 riops=max wiops=max"))
+
+    def test_wrong_value_refused(self):
+        self.assertFalse(cg._verify_io_max_value(
+            self.EXPECTED,
+            "8:17 rbps=1048576 wbps=1073741824 riops=max wiops=max"))
+
+    def test_missing_configured_field_refused(self):
+        self.assertFalse(cg._verify_io_max_value(
+            self.EXPECTED, "8:17 rbps=1073741824 riops=max wiops=max"))
+
+    def test_max_value_refused_when_numeric_configured(self):
+        self.assertFalse(cg._verify_io_max_value(
+            self.EXPECTED, "8:17 rbps=max wbps=1073741824 riops=max wiops=max"))
+
+    def test_unknown_field_refused(self):
+        self.assertFalse(cg._verify_io_max_value(
+            self.EXPECTED,
+            "8:17 rbps=1073741824 wbps=1073741824 riops=max wiops=max bogus=1"))
+
+    def test_duplicate_field_refused(self):
+        self.assertFalse(cg._verify_io_max_value(
+            self.EXPECTED, "8:17 rbps=1073741824 rbps=1073741824 wbps=1073741824"))
+
+    def test_malformed_token_refused(self):
+        self.assertFalse(cg._verify_io_max_value(
+            self.EXPECTED, "8:17 rbps=1073741824 wbps=1073741824 garbage"))
+
+    def test_empty_readback_refused(self):
+        self.assertFalse(cg._verify_io_max_value(self.EXPECTED, ""))
+
+
 class CgroupProbeTests(unittest.TestCase):
     """RESOURCES guard fail-closed shape (host-side)."""
 
@@ -457,7 +510,11 @@ class CgroupProbeTests(unittest.TestCase):
         # DOCKER ROOTLESS BLOCKED / NATIVE NOT VERIFIED: on this substrate
         # the delegation probe reports the precise reason (Docker rootless:
         # cgroupfs read-only) and HARDENED refuses AT RESOURCES - never a
-        # cgroup enforcement PASS.
+        # cgroup enforcement PASS. The fail-closed assertion runs only on
+        # substrates WITHOUT delegation; where delegation IS available the
+        # premise is absent and the test skips with the recorded reason.
+        from tests.unit import require_delegation_unavailable
+        require_delegation_unavailable(self)
         from tests.unit import test_resources as tr
         tr._require_ns(self)
         src = tempfile.mkdtemp(prefix="as-cg-ws-")
@@ -538,9 +595,23 @@ class CgroupDelegationGatedTests(unittest.TestCase):
         # from inside and the session's kernel read-backs.
         data = _json_loads(run.output.strip())
         for name, value in expected.items():
-            self.assertEqual(data["limits"][name], value,
-                             f"{name} must read back exactly {value}")
-        self.assertIn(session.path, data["cgroup"],
+            # io.max is verified SEMANTICALLY (the kernel normalizes the
+            # read-back by appending riops=max/wiops=max - Ubuntu
+            # 24.04/kernel 6.8; exact-string equality is too strict for a
+            # valid kernel response); pids/memory/cpu are exact-string
+            # (the kernel echoes them verbatim). Same comparison the
+            # product's join_and_verify/_verify_limits uses.
+            self.assertTrue(
+                cg._readback_matches(name, value, data["limits"][name]),
+                f"{name} must read back matching {value}, got "
+                f"{data['limits'][name]!r}")
+        # Membership: /proc/self/cgroup shows the cgroup-RELATIVE path
+        # ("0::/sbx-..."), not the cgroupfs absolute path (session.path
+        # is /sys/fs/cgroup/sbx-...). The workload must be INSIDE the
+        # session cgroup - its cgroup path must end with the session
+        # cgroup's name.
+        session_name = os.path.basename(session.path.rstrip("/"))
+        self.assertIn(session_name, data["cgroup"],
                       "workload must be a member of the session cgroup")
 
 

@@ -588,7 +588,16 @@ class HostBatteryTests(unittest.TestCase):
                                for p in fs_mod.HOST_ABSENT_PATHS})
 
         data = json.loads(_run(fn, self.rootfs))
+        # /etc/passwd is the documented exception when the curated
+        # toolchain (ADR-005) is provisioned: it provides a minimal
+        # SANITIZED root/nobody passwd, verified by CONTENT inside the
+        # boundary (filesystem._toolchain_etc_problems) instead of
+        # absence. Its presence is therefore not a host-credential
+        # exposure; the content check is what refuses on deviation.
+        toolchain_configured = bool(os.environ.get("AGENT_SANDBOX_TOOLCHAIN"))
         for p, present in data.items():
+            if present and p == "/etc/passwd" and toolchain_configured:
+                continue
             self.assertFalse(present, f"host path {p} reachable in sandbox")
 
     @skip_unless_linux
@@ -676,7 +685,11 @@ class FailureModeTests(unittest.TestCase):
         real_mount = syscalls.mount
 
         def boom(source, target, fstype, flags, data=b""):
-            if target == b"/proc":
+            # The pre-pivot proc mount (mount_sandbox_proc_prepivot)
+            # targets the RELATIVE ``proc`` (the caller's cwd is the
+            # rootfs dir), not the post-pivot "/proc". Match the
+            # procfs mount specifically so the sabotage lands.
+            if fstype == b"proc" and target in (b"proc", b"/proc"):
                 raise OSError(errno.EPERM, "mount: Operation not permitted")
             return real_mount(source, target, fstype, flags, data)
 

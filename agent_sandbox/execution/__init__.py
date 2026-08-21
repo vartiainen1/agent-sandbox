@@ -15,7 +15,9 @@ This module provides the two pieces the interfaces share:
   sandbox - v0.1 never interprets a shell command string);
 - the execve workload bridge: the CLI/MCP command is represented by a
   workload function that ``execve(2)``s the requested argv INSIDE the
-  already-established sandbox (execve is in the 45-syscall allowlist).
+  already-established sandbox (execve is in the 45-syscall allowlist;
+  bare executable names resolve via ``execvpe`` against the
+  sandbox-only sanitized PATH).
   stdout/stderr and exit status continue through the existing Step
   13-15 bounded-output, timeout, and process-tree machinery. There is
   NO host-side command execution fallback: an unavailable command is a
@@ -24,7 +26,7 @@ This module provides the two pieces the interfaces share:
   executed outside the sandbox.
 
 Import safety: imports only stdlib pieces available on every platform;
-``os.execve`` is only ever called from inside the sandbox (child B).
+``os.execvpe`` is only ever called from inside the sandbox (child B).
 """
 
 from __future__ import annotations
@@ -56,14 +58,19 @@ def command_workload(request: ExecutionRequest) -> Callable:
     that execs the requested argv inside the boundary.
 
     The bridge runs in sandbox PID 1 AFTER every mandatory mechanism is
-    established (Steps 2-15). ``os.execve`` replaces PID 1 with the
+    established (Steps 2-15). ``os.execvpe`` replaces PID 1 with the
     command: its stdout/stderr flow through the bounded pipes (S-037),
     the external deadline applies (S-036), and its exit status
     propagates through the existing waitpid chain (S-014/S-038 cleanup
-    still verifies absence afterwards). If the executable does not
-    exist or cannot be run, ``os.execve`` raises and the workload
-    reports a deterministic ``FAIL workload:`` failure - the command is
-    NEVER executed on the host (no fallback, no subprocess, no shell).
+    still verifies absence afterwards). ``execvpe`` resolves bare
+    executable names against PATH (the documented v0.1 argv-only
+    contract: ``python3 -c '...'``, ``git init``, ``/bin/sh -c '...'``)
+    - the PATH here is the sanitized sandbox-only
+    ``/usr/local/bin:/usr/bin:/bin``, so resolution cannot reach a host
+    path. If the executable does not exist or cannot be run, the
+    workload reports a deterministic ``FAIL workload:`` failure - the
+    command is NEVER executed on the host (no fallback, no subprocess,
+    no shell).
 
     ``os.environ`` at this point IS the sanitized six-variable sandbox
     environment (Step 11 replaced it in PID 1 before the workload) - so
@@ -71,7 +78,7 @@ def command_workload(request: ExecutionRequest) -> Callable:
     command = request.command
 
     def workload(state, fs):
-        os.execve(command[0], list(command), os.environ)
-        return None  # unreachable: execve either replaces or raises
+        os.execvpe(command[0], list(command), os.environ)
+        return None  # unreachable: execvpe either replaces or raises
 
     return workload

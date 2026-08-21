@@ -626,7 +626,10 @@ class IntegrationTests(unittest.TestCase):
         # SECCOMP and RESOURCES (rlimits) probes run; HARDENED then
         # refuses AT RESOURCES because cgroup v2 delegation is unavailable
         # on this substrate (Docker rootless: cgroupfs read-only) - fail
-        # closed, no execution.
+        # closed, no execution. Where delegation IS available the premise
+        # is absent and the test skips with the recorded reason.
+        from tests.unit import require_delegation_unavailable
+        require_delegation_unavailable(self)
         _require_fs(self)
         src = tempfile.mkdtemp(prefix="as-nnp-int-")
         self.addCleanup(shutil.rmtree, src, True)

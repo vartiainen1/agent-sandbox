@@ -190,9 +190,9 @@ class RequestValidationTests(unittest.TestCase):
                         return f"os.{node.attr}"
                     if (isinstance(node.value, ast.Name)
                             and node.value.id == "os"
-                            and node.attr == "execve"
+                            and node.attr in ("execve", "execvpe")
                             and not allowed_execve):
-                        return "os.execve"
+                        return f"os.{node.attr}"
             return None
 
         from agent_sandbox import cli as _cli
@@ -206,8 +206,8 @@ class RequestValidationTests(unittest.TestCase):
         exec_tree = ast.parse(inspect.getsource(_exec))
         self.assertIsNone(uses_forbidden(exec_tree, allowed_execve=True),
                           "execution module must only use the approved "
-                          "os.execve bridge")
-        self.assertIn("os.execve", inspect.getsource(_exec))
+                          "os.execvpe bridge")
+        self.assertIn("os.execvpe", inspect.getsource(_exec))
 
 
 class SessionExecuteTests(unittest.TestCase):

@@ -699,6 +699,10 @@ class IntegrationTests(unittest.TestCase):
         # then HARDENED refuses AT RESOURCES because cgroup v2 delegation
         # is unavailable on this substrate (Docker rootless: cgroupfs
         # read-only) - the refusal point stays at RESOURCES, fail closed.
+        # Where delegation IS available the premise is absent and the
+        # test skips with the recorded reason.
+        from tests.unit import require_delegation_unavailable
+        require_delegation_unavailable(self)
         ok, reason = _fs_available()
         if not ok:
             self.skipTest("filesystem boundary substrate unavailable: " + reason)

@@ -553,7 +553,11 @@ class IntegrationTests(unittest.TestCase):
         # On a delegation-capable host this probe would pass and the
         # chain completes through ENVIRONMENT (Steps 11-12) and
         # EXECUTION (Steps 13-15) to READY (asserted by the
-        # privileged-substrate tests in test_cgroups.py).
+        # privileged-substrate tests in test_cgroups.py); the premise -
+        # refusal without delegation - is absent there and the test skips
+        # with the recorded reason.
+        from tests.unit import require_delegation_unavailable
+        require_delegation_unavailable(self)
         _require_fs(self)
         src = make_source()
         self.addCleanup(shutil.rmtree, src, True)

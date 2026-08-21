@@ -122,12 +122,14 @@ def getgid() -> int:
 # ---------------------------------------------------------------------------
 
 # mount(2) flags (kernel ABI)
-MS_BIND = 0x1000
-MS_REC = 0x4000
-MS_PRIVATE = 0x40000
+MS_RDONLY = 0x1
 MS_NOSUID = 0x2
 MS_NODEV = 0x4
 MS_NOEXEC = 0x8
+MS_REMOUNT = 0x20
+MS_BIND = 0x1000
+MS_REC = 0x4000
+MS_PRIVATE = 0x40000
 # umount2(2) flags
 MNT_DETACH = 0x2
 

@@ -214,21 +214,49 @@ class WorkspaceIsolationTests(unittest.TestCase):
                 p = pathlib.Path("/workspace") / name
                 try:
                     with open(p, "rb") as f:
-                        f.read(1)
-                    results[name] = "OPENED"
+                        content = f.read()
+                    # The link resolved. It is only acceptable if the
+                    # opened content is the SANDBOX sanitized /etc/passwd
+                    # (root/nobody only, ADR-005 toolchain) - never host
+                    # passwd data. Distinguish the two outcomes.
+                    lines = [ln for ln in content.decode(errors="replace")
+                             .splitlines() if ln.strip()]
+                    names = {ln.split(":")[0] for ln in lines
+                             if ":" in ln}
+                    if (names <= {"root", "nobody"}
+                            and not any("$" in ln for ln in lines)
+                            and len(content) < 500):
+                        results[name] = "SANDBOX-SANITIZED"
+                    else:
+                        results[name] = "OPENED-LEAKED"
                 except OSError as e:
                     results[name] = f"blocked:{e.errno}"
-            # The resolved lexical targets must not exist inside the rootfs
-            # (no host content reachable) and /etc/passwd must be absent.
+            # The resolved lexical targets must not reach HOST content:
+            # /etc/passwd inside the rootfs is either absent (minimal
+            # rootfs) or the SANITIZED toolchain file.
             results["etc_passwd_exists"] = os.path.lexists("/etc/passwd")
             results["realpath_abs"] = os.path.realpath("/workspace/link_abs")
             return json.dumps(results)
 
         data = json.loads(_run(fn, self.rootfs))
-        for name in ("link_abs", "link_esc", "link_chain_a", "link_loop"):
-            self.assertTrue(data[name].startswith("blocked:"),
-                            f"{name} must not open: {data[name]}")
-        self.assertFalse(data["etc_passwd_exists"])
+        # link_loop is a self-loop: must be blocked (ELOOP) on every
+        # substrate. The others resolve to /etc/passwd - blocked outright
+        # (minimal rootfs) or the SANDBOX-SANITIZED file (toolchain) - a
+        # host-content leak is NEVER acceptable.
+        for name in ("link_abs", "link_esc", "link_chain_a"):
+            self.assertTrue(
+                data[name].startswith("blocked:")
+                or data[name] == "SANDBOX-SANITIZED",
+                f"{name} must not reach host content: {data[name]}")
+        self.assertTrue(data["link_loop"].startswith("blocked:"),
+                        f"link_loop must not open: {data['link_loop']}")
+        # /etc/passwd may exist only as the sanitized toolchain file; the
+        # product verifies its content (filesystem._toolchain_etc_problems)
+        # inside the boundary.
+        toolchain_configured = bool(os.environ.get("AGENT_SANDBOX_TOOLCHAIN"))
+        if data["etc_passwd_exists"]:
+            self.assertTrue(toolchain_configured,
+                            "unexpected /etc/passwd without toolchain")
         self.assertEqual(data["realpath_abs"], "/etc/passwd")  # resolves in-rootfs
 
 
@@ -275,7 +303,14 @@ class PivotRootTests(unittest.TestCase):
                                "dev_dir": os.path.isdir("/dev")})
 
         data = json.loads(_run(fn, self.rootfs))
+        # /etc/passwd is the documented exception when the curated
+        # toolchain (ADR-005) is provisioned: a SANITIZED root/nobody
+        # passwd, verified by content inside the boundary instead of
+        # absence (filesystem._toolchain_etc_problems).
+        toolchain_configured = bool(os.environ.get("AGENT_SANDBOX_TOOLCHAIN"))
         for p, present in data["absent"].items():
+            if present and p == "/etc/passwd" and toolchain_configured:
+                continue
             self.assertFalse(present, f"host path {p} reachable in sandbox")
         for p, ok in data["placeholders"].items():
             self.assertTrue(ok, f"rootfs placeholder {p} missing")
@@ -418,7 +453,7 @@ class FailureModeTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, src, True)
         real_verify = fs_mod._verify_root_boundary
 
-        def broken_verify(rootfs):
+        def broken_verify(rootfs, toolchain=None):
             raise NamespaceSetupError("root identity mismatch (simulated)")
 
         try:
@@ -443,7 +478,10 @@ class GuardAndIntegrationTests(unittest.TestCase):
         # verified, then HARDENED refuses AT RESOURCES because cgroup v2
         # delegation is unavailable on this substrate (Docker rootless:
         # cgroupfs read-only) - the refusal point stays at RESOURCES,
-        # fail closed.
+        # fail closed. Where delegation IS available the premise is
+        # absent and the test skips with the recorded reason.
+        from tests.unit import require_delegation_unavailable
+        require_delegation_unavailable(self)
         _require_fs(self)
         src = make_source()
         self.addCleanup(shutil.rmtree, src, True)

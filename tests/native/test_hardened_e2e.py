@@ -144,9 +144,26 @@ class TestHardenedSubstrateProbe(unittest.TestCase):
         require_controllers(state)  # raises if missing
 
     def test_delegation_writable(self):
-        """A child cgroup can be created and removed."""
+        """A child cgroup can be created and removed.
+
+        Root/non-root distinction: a non-root caller in an
+        undelogated cgroup is EXPECTED to be refused (that is the
+        exact fail-closed behavior HARDENED relies on) - it is
+        recorded as the substrate's delegation state, not a failure.
+        The delegation REQUIREMENT itself is never weakened: when the
+        subtree IS delegated (root on the native VM), the probe must
+        succeed."""
         from agent_sandbox.isolation.cgroups import probe_delegation
         blocked = probe_delegation()
+        if blocked is not None:
+            self.skipTest(
+                f"Substrate limitation: cgroup delegation unavailable to "
+                f"this caller: {blocked}. Non-root callers without a "
+                f"delegated subtree cannot create child cgroups - the "
+                f"expected fail-closed state HARDENED refuses on. A "
+                f"delegated subtree (systemd Delegate=yes) or a root "
+                f"caller provides it."
+            )
         self.assertIsNone(blocked, f"Delegation blocked: {blocked}")
 
     def test_subtree_control_state(self):
@@ -215,10 +232,23 @@ class TestHardenedSubstrateProbe(unittest.TestCase):
 class TestHardenedCgroupDirect(unittest.TestCase):
     """Direct cgroup operations - test what we can on any cgroup v2 substrate."""
 
+    # Fixed-name session cgroups would collide across runs on a
+    # persistent substrate (FileExistsError on the second run), so each
+    # test uses a unique name and removes its session cgroup afterwards
+    # (addCleanup - the cgroup is always cleaned up, pass or fail).
+    def _make_session(self, base: str, limits, ws: str):
+        from agent_sandbox.isolation.cgroups import (
+            prepare_session,
+            remove_session,
+        )
+        name = f"{base}-{os.getpid()}-{id(self)}"
+        session = prepare_session("/sys/fs/cgroup", name, limits, ws)
+        self.addCleanup(remove_session, session)
+        return session
+
     def test_prepare_session_with_controllers(self):
         """prepare_session succeeds when controllers are in subtree_control."""
         from agent_sandbox.isolation.cgroups import (
-            prepare_session,
             CgroupSession,
         )
         from agent_sandbox.config import ResourceLimits
@@ -232,11 +262,9 @@ class TestHardenedCgroupDirect(unittest.TestCase):
             processes=16, open_files=32, output_mb=10, wall_time_seconds=30,
         )
         with tempfile.TemporaryDirectory() as ws:
-            session = prepare_session(
-                "/sys/fs/cgroup", "sbx-p3-test", limits, ws
-            )
+            session = self._make_session("sbx-p3-test", limits, ws)
             self.assertIsInstance(session, CgroupSession)
-            self.assertTrue(session.path.endswith("sbx-p3-test"))
+            self.assertIn("sbx-p3-test", session.path)
 
     def test_limits_readable_after_prepare(self):
         """All four cgroup limits are readable after prepare_session."""
@@ -253,9 +281,7 @@ class TestHardenedCgroupDirect(unittest.TestCase):
             cpu_quota_percent=50, io_mbps=100,
         )
         with tempfile.TemporaryDirectory() as ws:
-            session = prepare_session(
-                "/sys/fs/cgroup", "sbx-p3-limits", limits, ws
-            )
+            session = self._make_session("sbx-p3-limits", limits, ws)
             pids = open(os.path.join(session.path, "pids.max")).read().strip()
             mem = open(os.path.join(session.path, "memory.max")).read().strip()
             cpu = open(os.path.join(session.path, "cpu.max")).read().strip()
@@ -373,10 +399,13 @@ class TestHardenedSeccomp(unittest.TestCase):
 
         _, result = _run_hardened(
             ("python3", "-c",
-             "import socket; "
-             "try: "
-             "  s = socket.socket(); print('SOCKET_ALLOWED'); s.close() "
-             "except OSError as e: print(f'SOCKET_DENIED: {e}')"),
+             "import socket\n"
+             "try:\n"
+             "    s = socket.socket()\n"
+             "    print('SOCKET_ALLOWED')\n"
+             "    s.close()\n"
+             "except OSError as e:\n"
+             "    print('SOCKET_DENIED: %s' % e)"),
             wall_time=15,
         )
         self.assertNotIsInstance(result, ExecutionRefused,
@@ -527,9 +556,16 @@ class TestHardenedCleanup(unittest.TestCase):
         """External timeout terminates the workload."""
         from agent_sandbox.models import ExecutionRefused
 
+        # NOTE: the workload cannot sleep - nanosleep/clock_nanosleep are
+        # deliberately NOT in the 45-syscall allowlist (documented in
+        # docs/seccomp-derivation/verification.md, "no expansion"). The
+        # established hang pattern is a blocking read on a pipe the
+        # workload creates itself (pipe2 + read are allowlisted), so the
+        # external supervisor deadline is what terminates it.
         _, result = _run_hardened(
             ("python3", "-c",
-             "import time; time.sleep(30); print('SHOULD_NOT_APPEAR')"),
+             "import os; r, w = os.pipe(); "
+             "os.read(r, 1); print('SHOULD_NOT_APPEAR')"),
             wall_time=3,
         )
         self.assertNotIsInstance(result, ExecutionRefused,

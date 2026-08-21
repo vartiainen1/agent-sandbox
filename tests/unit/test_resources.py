@@ -277,7 +277,10 @@ class ResourceProbeTests(unittest.TestCase):
         # REFUSES AT RESOURCES with the precise detected reason - never a
         # partial success, never a silent downgrade to rlimits-only. On a
         # delegation-capable host the probe passes (privileged-substrate
-        # tests in test_cgroups.py).
+        # tests in test_cgroups.py) and this test skips: its premise is
+        # the absence of delegation.
+        from tests.unit import require_delegation_unavailable
+        require_delegation_unavailable(self)
         _require_ns(self)
         src = tempfile.mkdtemp(prefix="as-rs-ws-")
         self.addCleanup(shutil.rmtree, src, True)
@@ -434,7 +437,10 @@ class ResourceIntegrationTests(unittest.TestCase):
         # read-only) - the refusal point stays at RESOURCES, fail closed.
         # On a delegation-capable host the chain would advance to
         # ENVIRONMENT (asserted by the privileged-substrate tests in
-        # test_cgroups.py).
+        # test_cgroups.py) and this test skips: its premise is the
+        # absence of delegation.
+        from tests.unit import require_delegation_unavailable
+        require_delegation_unavailable(self)
         _require_fs(self)
         src = tempfile.mkdtemp(prefix="as-rs-int-")
         self.addCleanup(shutil.rmtree, src, True)

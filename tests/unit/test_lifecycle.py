@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 import unittest
 import unittest.mock
 
@@ -328,6 +329,68 @@ class SandboxLifecycleIntegrationTests(unittest.TestCase):
         self.assertEqual(run.cleanup_failure, "",
                          f"no workload process may survive, got "
                          f"{run.cleanup_failure}")
+
+    @skip_unless_linux
+    def test_fork_buffer_does_not_leak_into_workload_output(self):
+        # Regression for the fork-inherited stdio buffer pollution: the
+        # supervisor's BUFFERED stdout must NOT flush into the workload's
+        # captured output when the workload prints (run_in_sandbox flushes
+        # stdout/stderr immediately before forking). A pre-fork buffered
+        # marker must never appear in run.output - and the fix must work
+        # WITHOUT PYTHONUNBUFFERED (i.e. with the interpreter's normal
+        # block buffering, as in this test process).
+        _require_fs(self)
+        marker = "PRE-FORK-BUFFERED-MARKER-7f3a9c"
+        sys.stdout.write(marker)  # buffered: no flush yet
+        try:
+            run = self._run(lambda state, fs: "WORKLOAD-OUTPUT-ONLY")
+        finally:
+            sys.stdout.flush()  # restore a clean stream for the runner
+        self.assertEqual(run.exit_code, 0, run.output)
+        self.assertNotIn(marker, run.output,
+                         "supervisor buffered output must not leak into "
+                         "the workload's captured output")
+        self.assertEqual(run.output.strip(), "WORKLOAD-OUTPUT-ONLY")
+
+    @skip_unless_linux
+    def test_repeated_runs_do_not_leak_fds(self):
+        # Regression for the out_r descriptor leak: the supervisor's
+        # output read end is closed on EVERY return path, so repeated
+        # real sandbox runs must NOT accumulate open fds in this
+        # process. Covers the success, failing-workload, and timeout
+        # paths together; a leak of even one descriptor per run would
+        # show as linear growth far beyond the slack.
+        _require_fs(self)
+
+        def count_fds():
+            return len(os.listdir("/proc/self/fd"))
+
+        self._run(lambda state, fs: "WARM")  # warm imports/state
+        before = count_fds()
+        for _ in range(8):
+            run = self._run(lambda state, fs: "OK")
+            self.assertEqual(run.exit_code, 0, run.output)
+        # Failing workload (fn raises -> exit != 0, still completes).
+        def failing(state, fs):
+            raise RuntimeError("boom")
+        run = self._run(failing)
+        self.assertNotEqual(run.exit_code, 0)
+        # Timeout path (deadline fires, session terminated). The
+        # workload cannot sleep (clock_nanosleep is not in the
+        # allowlist); the documented hang is a blocking read on a pipe
+        # it creates itself (pipe2 + read are allowlisted).
+        def hang(state, fs):
+            r, w = os.pipe()
+            os.read(r, 1)  # blocks forever - allowlisted syscalls
+            return "NEVER"
+        run = self._run(hang, wall_time_seconds=1)
+        self.assertTrue(run.timed_out)
+        after = count_fds()
+        # 10 runs x 5 pipes = 50 pipe fds would leak if any end leaked;
+        # allow a small slack for interpreter-internal allocation noise
+        # only - no linear per-run growth is permitted.
+        self.assertLessEqual(after - before, 4,
+                             f"repeated runs leaked fds: {before} -> {after}")
 
 
 def tr_tempdir():

@@ -411,7 +411,10 @@ class ProbeIntegrationTests(unittest.TestCase):
         # delegation is unavailable on this substrate (Docker rootless:
         # cgroupfs read-only) - the fail-closed chain works end to end.
         # Skipped (with reason) on a substrate that cannot provide the
-        # mapping.
+        # mapping, and on one where delegation IS available (the premise
+        # - refusal without delegation - is absent there).
+        from tests.unit import require_delegation_unavailable
+        require_delegation_unavailable(self)
         _require_rootless(self)
         check = setup.namespace_probe()
         self.assertTrue(check.ok, check.reason)
