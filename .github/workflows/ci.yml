@@ -36,6 +36,9 @@ jobs:
       - name: Compile check (all Python)
         run: python -m compileall -q tools agent_sandbox
 
+      - name: Phase E deterministic fuzz harness (host-side fail-safe evidence - seed 0xC0FFEE, bounded)
+        run: python -m unittest discover -s tests/fuzz -t . -v
+
       - name: Runtime unit tests (skeleton, fail-closed init, execution gate, namespace wiring)
         run: python -m unittest discover -s tests -t . -v
 

@@ -162,6 +162,10 @@ def _parse_workspace(value) -> str:
 
 
 def _parse_network_mode(value) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"network_mode: expected a string, got {type(value).__name__} "
+            "- network is deny by construction")
     if value not in SUPPORTED_NETWORK_MODES:
         raise ConfigError(
             f"network_mode: {value!r} is not supported in v0.1 "

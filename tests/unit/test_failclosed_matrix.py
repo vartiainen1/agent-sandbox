@@ -43,6 +43,8 @@ Failure injection discipline (approved N1 design):
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -53,6 +55,7 @@ import unittest
 import unittest.mock
 
 from agent_sandbox import config as config_mod
+from agent_sandbox import registry
 from agent_sandbox.audit.recorder import AuditRecorder
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.isolation import cgroups as cgroups_mod
@@ -819,6 +822,66 @@ class GitFailClosedTests(_CliTestCase):
                 code, _, _ = self._cli(["git", sid, "status", "--json"])
         self.assertEqual(code, 0)
         ex.assert_called_once()
+
+
+class FuzzHarnessHygieneTests(unittest.TestCase):
+    """Phase E N1 rows: the fuzz evidence base itself is deterministic,
+    and the three approved fail-safe fixes (F-1/F-3/F-4) carry explicit
+    minimal regression cases - malformed input must fail safely and
+    never crash the host (implementation.md Phase 15 acceptance)."""
+
+    def test_fuzz_mutation_stream_is_deterministic(self) -> None:
+        import random
+
+        from tests.fuzz import _fuzzutil
+        corpus = ["a" * 32, "x", "", "--json", "/workspace"]
+        a = list(_fuzzutil.fuzz_stream(
+            random.Random(0xC0FFEE), corpus, 25,
+            _fuzzutil.mutate_string))
+        b = list(_fuzzutil.fuzz_stream(
+            random.Random(0xC0FFEE), corpus, 25,
+            _fuzzutil.mutate_string))
+        self.assertEqual(a, b, "same seed must yield the same stream - "
+                                "non-deterministic fuzz evidence is "
+                                "not evidence")
+
+    def test_f1_network_mode_non_string_refused_deterministically(self) -> None:
+        # F-1 regression: non-string network_mode must raise the
+        # deterministic ConfigError - never a TypeError crash.
+        for bad in (["deny"], {"x": 1}, 3, None):
+            with self.assertRaises(config_mod.ConfigError):
+                RuntimeConfig.from_dict({
+                    "mode": "restricted",
+                    "workspace": "/tmp/w",
+                    "network_mode": bad,
+                })
+        # the sole v0.1 mode remains accepted
+        cfg = RuntimeConfig.from_dict({
+            "mode": "restricted",
+            "workspace": "/tmp/w",
+            "network_mode": "deny",
+        })
+        self.assertEqual(cfg.network_mode, "deny")
+
+    def test_f3_f4_audit_readback_never_crashes(self) -> None:
+        # F-3: undecodable bytes; F-4: valid JSON but non-dict lines.
+        # Both must be handled observationally by logs (S-024).
+        sid = "f" * 32
+        config = RuntimeConfig.from_dict({
+            "mode": "restricted", "workspace": "/tmp/w"})
+        with tempfile.TemporaryDirectory() as td:
+            registry.save_session(td, sid, config,
+                                  created="2026-08-22T00:00:00+00:00")
+            path = registry.session_audit_path(td, sid)
+            for payload in (b"\x91\x92", b"null\n", b"[]\n",
+                            b'"str"\n', b"123\n", b"{}garbage\n"):
+                pathlib.Path(path).write_bytes(payload)
+                with contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    code = cli_mod._cmd_logs([sid, "--json"], td)
+                self.assertIsInstance(
+                    code, int,
+                    f"logs must never crash on audit payload {payload!r}")
 
 
 if __name__ == "__main__":

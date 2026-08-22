@@ -645,7 +645,11 @@ def _cmd_logs(argv: list[str], base: str) -> int:
     path = registry.session_audit_path(base, args.session_id)
     events: list[dict] = []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # errors="replace" (F-3): undecodable bytes in a corrupted audit
+        # file surface as replacement characters and hit the per-line
+        # observational skip below - the logs command never crashes and
+        # audit parsing never becomes an authorization decision (S-024).
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -654,6 +658,11 @@ def _cmd_logs(argv: list[str], base: str) -> int:
                     ev = json.loads(line)
                 except ValueError:
                     continue  # observational - malformed audit lines
+                if not isinstance(ev, dict):
+                    # F-4: valid JSON but not an event object (null, [] ,
+                    # string, number) - same observational skip; audit
+                    # parsing never crashes the host (S-024).
+                    continue
                 if ev.get("session_id") == args.session_id:
                     events.append(ev)
     except OSError:
