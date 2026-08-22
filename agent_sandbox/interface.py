@@ -94,6 +94,7 @@ class SessionManager:
         workspace = params.get("workspace")
         mode = params.get("mode", "restricted")
         audit = params.get("audit")
+        policy = params.get("policy")
 
         if not isinstance(workspace, str) or not workspace.strip():
             raise InterfaceParamError(
@@ -107,10 +108,15 @@ class SessionManager:
         if audit is not None and (not isinstance(audit, str) or not audit):
             raise InterfaceParamError("initialize: audit must be a non-empty "
                                       "path")
+        if policy is not None and not isinstance(policy, dict):
+            raise InterfaceParamError("initialize: policy must be a JSON "
+                                      "object (capability document)")
 
+        config_data: dict = {"mode": mode, "workspace": workspace}
+        if policy is not None:
+            config_data["policy"] = policy
         try:
-            config = RuntimeConfig.from_dict({"mode": mode,
-                                              "workspace": workspace})
+            config = RuntimeConfig.from_dict(config_data)
         except ConfigError as e:
             raise InterfaceParamError(str(e)) from None
 

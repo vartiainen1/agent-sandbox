@@ -26,7 +26,10 @@ set, no handshake beyond this):
 
 - ``initialize``  params: workspace (required, absolute host dir),
                   mode (hardened|restricted|compatibility, default
-                  restricted), audit (optional host JSONL path).
+                  restricted), audit (optional host JSONL path), policy
+                  (optional capability policy document - version 1 JSON,
+                  ADR-010; validated host-side before the session starts,
+                  S-021).
 - ``execute``     params: session_id (required), command (required,
                   non-empty argv array of strings).
 

@@ -48,6 +48,8 @@ from agent_sandbox.audit import (
     EXECUTION_REQUEST,
     EXECUTION_RESULT,
     INIT_DECISION,
+    POLICY_DECISION,
+    POLICY_LOADED,
     SESSION_CREATED,
     AuditRecorder,
 )
@@ -387,12 +389,13 @@ class AuditTests(unittest.TestCase):
         with open(audit_path, encoding="utf-8") as f:
             events = [json.loads(l) for l in f if l.strip()]
         self.assertEqual([e["event"] for e in events],
-                         [SESSION_CREATED, INIT_DECISION,
-                          EXECUTION_REQUEST, EXECUTION_RESULT])
+                         [SESSION_CREATED, POLICY_LOADED, INIT_DECISION,
+                          POLICY_DECISION, EXECUTION_REQUEST,
+                          EXECUTION_RESULT])
         for ev in events:
             self.assertEqual(ev["session_id"], session.session_id)
-        self.assertEqual(events[2]["command"], ["/workspace/t"])
-        self.assertEqual(events[3]["exit_code"], 0)
+        self.assertEqual(events[4]["command"], ["/workspace/t"])
+        self.assertEqual(events[5]["exit_code"], 0)
 
     def test_refusal_recorded(self):
         src = _make_workspace("tool", b"\x00")

@@ -35,6 +35,8 @@ from typing import Any
 # Event names (ADR-012 design section 29 event classes, minimal set).
 SESSION_CREATED = "session_created"          # session + mode
 INIT_DECISION = "init_decision"              # ok / refused + stage + reason
+POLICY_LOADED = "policy_loaded"              # policy version + capability count
+POLICY_DECISION = "policy_decision"          # capability + allowed + reason (S-015)
 EXECUTION_REQUEST = "execution_request"      # argv vector
 EXECUTION_RESULT = "execution_result"        # exit code + enforcement state
 EXECUTION_REFUSED = "execution_refused"      # refusal reason + state

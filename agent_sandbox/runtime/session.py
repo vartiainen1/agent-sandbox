@@ -113,6 +113,13 @@ class RuntimeSession:
         """Run security initialization (fail closed). Sets the session
         state from the result; the state is the single gate for execute."""
         self._record("session_created", mode=self._config.mode.value)
+        # Phase 4 (S-040): the active security configuration is observable
+        # - record the validated policy (version + capability map).
+        self._record(
+            "policy_loaded",
+            version=self._config.policy.version,
+            capabilities=dict(self._config.policy.capabilities),
+        )
         result = SecurityInitializer(self._config).initialize()
         self._init_result = result
         self._state = SessionState.READY if result.ok else SessionState.REFUSED
@@ -150,7 +157,28 @@ class RuntimeSession:
                          state=self._state.value)
             return ExecutionRefused(reason=reason, state=self._state.value)
 
-        # 3. The Linux-only runtime refuses deterministically on other
+        # 3. Phase 4 policy decision (S-015): every requested action passes
+        #    the policy engine - the single decision point shared by CLI,
+        #    MCP and API (ADR-013). A denied capability refuses the request
+        #    BEFORE any boundary work (fail closed, deterministic reason).
+        decision = self._config.policy.require(
+            "filesystem.read.workspace",
+            "filesystem.write.workspace",
+            "process.spawn",
+        )
+        if not decision.allowed:
+            reason = ("workload execution blocked by policy: "
+                      f"{decision.describe()} - fail closed, workload "
+                      "not executed")
+            self._record("policy_decision", capability=decision.capability,
+                         allowed=False, reason=decision.reason)
+            self._record("execution_refused", reason=reason,
+                         state=self._state.value)
+            return ExecutionRefused(reason=reason, state=self._state.value)
+        self._record("policy_decision", capability=decision.capability,
+                     allowed=True, reason=decision.reason)
+
+        # 4. The Linux-only runtime refuses deterministically on other
         #    platforms (fail closed - never an alternate path).
         from agent_sandbox.isolation import setup as setup_mod
         from agent_sandbox.security import init as _init_mod

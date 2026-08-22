@@ -392,12 +392,12 @@ away):
 
 | Threat | Invariant | Evidence | Classification |
 |---|---|---|---|
-| T-040 CLI bypass of policy | S-015 | `test_cli.py::SessionExecuteTests` (refused session never reaches run_in_sandbox, setup failure blocked); `test_cli.py::RequestValidationTests` (empty command rejected, no shell) | HOST-SIDE: CLI gate verified; three-way equivalence demo confirmed shared path |
+| T-040 CLI bypass of policy | S-015 | `test_policy.py::SessionPolicyGateTests` (denied capability refuses execution with deterministic reason before any boundary work); `test_cli.py::SessionExecuteTests` (refused session never reaches run_in_sandbox); `test_api.py::ApiEquivalenceTests` / `test_mcp.py` (three-way CLI/MCP/API equivalence — all share `RuntimeSession.execute()`'s policy gate, ADR-013) | HOST-SIDE: policy gate + shared decision path verified |
 | T-041 MCP bypass of policy | S-016 | `test_mcp.py` (no subprocess/os.system/os.popen; decision equivalence with CLI) | HOST-SIDE: MCP gate verified; three-way equivalence demo confirmed shared path |
 | T-042 API bypass of policy | S-017 | `test_api.py::ApiEquivalenceTests` (success/refusal/malformed/invalid equivalent across all three); `test_api.py::ApiStructuralGuardTests` (no execution primitives, no framework) | HOST-SIDE: API gate verified; three-way equivalence demo confirmed shared path |
-| T-043 Policy tampering from inside | S-025, S-026 | `test_skeleton.py::SessionGateTests` (session config is readonly, policy immutable after validation); `test_lifecycle_attacks.py::PolicyTamperingTests` (in-sandbox tamper attempt contained) | HOST-SIDE: immutability verified; NATIVE VERIFIED (real boundary): in-sandbox tamper suite |
-| T-044 Malformed/unknown policy fields | S-021 | `test_skeleton.py::ConfigValidationTests` (unknown fields rejected, missing fields rejected, deterministic errors) | HOST-SIDE: parser verified |
-| T-045 Ambiguous policy | S-021 | `test_skeleton.py::ConfigValidationTests` (conflicts rejected, unsupported mode rejected) | HOST-SIDE: parser verified |
+| T-043 Policy tampering from inside | S-025, S-026 | `test_policy.py::PolicyImmutabilityTests` (frozen Policy, read-only capability map, policy never enters the rootfs tree via the real `build_rootfs`); `test_lifecycle_attacks.py::PolicyTamperingTests` (in-sandbox tamper attempt contained) | HOST-SIDE: immutability + rootfs-absence verified; NATIVE VERIFIED (real boundary): in-sandbox tamper suite |
+| T-044 Malformed/unknown policy fields | S-021 | `test_policy.py::PolicyValidationTests` (unknown top-level field / unknown capability / unsupported version / non-bool value rejected with deterministic message); `test_failclosed_matrix.py::PolicyFailClosedTests` (invalid policy never initializes) | HOST-SIDE: strict policy validator verified |
+| T-045 Ambiguous policy | S-021 | `test_policy.py::PolicyValidationTests` (policy/config resource conflict rejected — never a silent second source); `test_skeleton.py::ConfigValidationTests` (unsupported mode rejected) | HOST-SIDE: deterministic evaluation + conflict rejection verified |
 | T-046 Mode misrepresentation | S-019, S-020 | `test_skeleton.py::InitializationTests` (platform_fail_closed_on_non_linux, no_silent_downgrade); `test_api.py` (mode in every response) | HOST-SIDE: mode reporting verified across all interfaces |
 
 ### 10.8 Content and supply chain threats
@@ -407,7 +407,7 @@ away):
 | T-047 Malicious Git hooks | S-032 | `test_content_attacks.py::HookAttackTests` (hook executes inside sandbox, shell + outbound attempt contained, no host file modification, cleanup complete) | NATIVE VERIFIED (real boundary): git-hook suite |
 | T-048 Malicious dependencies | S-033 | `test_content_attacks.py::DependencyAttackTests` (install payload executes inside, privileged fs modification attempt contained, no host modification, cleanup complete) | NATIVE VERIFIED (real boundary): dependency suite |
 | T-049 Malicious build/test scripts | S-032 | `test_content_attacks.py::BuildScriptAttackTests` (script executes inside, protected host data read + write-outside-workspace attempt contained, no credential leak, cleanup complete) | NATIVE VERIFIED (real boundary): build-script suite |
-| T-050 Prompt injection | S-015 | `test_cli.py::SessionExecuteTests` (policy-gated, refused session never executes); `test_lifecycle_attacks.py::PromptInjectionTests` (injected instructions contained, no host effect) | HOST-SIDE: policy gate verified; NATIVE VERIFIED (real boundary): injection suite |
+| T-050 Prompt injection | S-015 | `test_policy.py::SessionPolicyGateTests` (requests gated on required capabilities — injected instructions cannot grant capabilities the policy denies); `test_lifecycle_attacks.py::PromptInjectionTests` (injected instructions contained, no host effect) | HOST-SIDE: policy-gated decision path verified; NATIVE VERIFIED (real boundary): injection suite |
 
 ### 10.9 Observation and information leakage threats
 

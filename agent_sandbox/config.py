@@ -20,6 +20,7 @@ import os
 from dataclasses import dataclass, field
 
 from agent_sandbox.models import ConfigError, SecurityMode
+from agent_sandbox.policy import Policy, PolicyError
 
 # v0.1 network posture: deny by construction (ARCHITECTURE.md section 8).
 # "allowlist" is a v0.2 feature - rejecting it now keeps the boundary
@@ -93,6 +94,12 @@ class RuntimeConfig:
     network_mode: str = "deny"
     env_allowlist: tuple[str, ...] = DEFAULT_ENV_ALLOWLIST
     resources: ResourceLimits = field(default_factory=lambda: _default_limits())
+    # Phase 4 (ADR-010, ARCHITECTURE section 12, S-015/S-021/S-025/S-026):
+    # the validated, immutable capability policy. Defaults to the documented
+    # v0.1 policy; when supplied it is validated here (host-side, before
+    # any session) and its resource declarations must be consistent with
+    # the config's resource limits (single source of truth - ADR-007).
+    policy: Policy = field(default_factory=Policy.default)
 
     # -- construction -------------------------------------------------
     @classmethod
@@ -104,7 +111,8 @@ class RuntimeConfig:
             raise ConfigError("configuration must be a mapping")
 
         unknown = sorted(set(data) - {
-            "mode", "workspace", "network_mode", "env_allowlist", "resources"})
+            "mode", "workspace", "network_mode", "env_allowlist",
+            "resources", "policy"})
         if unknown:
             raise ConfigError(
                 f"unknown configuration field(s): {', '.join(unknown)} - "
@@ -115,8 +123,11 @@ class RuntimeConfig:
         network_mode = _parse_network_mode(data.get("network_mode", "deny"))
         env_allowlist = _parse_env_allowlist(data.get("env_allowlist"))
         resources = _parse_resources(data.get("resources"))
+        policy = _parse_policy(data.get("policy"))
+        _check_policy_resources_consistent(policy, resources)
         return cls(mode=mode, workspace=workspace, network_mode=network_mode,
-                   env_allowlist=env_allowlist, resources=resources)
+                   env_allowlist=env_allowlist, resources=resources,
+                   policy=policy)
 
     # -- read-only accessors (no setters; immutability is structural) --
     @property
@@ -224,6 +235,51 @@ def _parse_bounded(key: str, value, default: int, lo: int, hi: int) -> int:
         raise ConfigError(
             f"resources: {key} must be in [{lo}, {hi}], got {value}")
     return value
+
+
+def _parse_policy(value) -> Policy:
+    """Parse an optional policy document. None -> the documented v0.1
+    default policy; a dict is validated strictly (PolicyError ->
+    ConfigError with a deterministic message naming the field, S-021); an
+    already-validated ``Policy`` (e.g. loaded by the CLI from a file) is
+    passed through unchanged - the strongest accepted input form."""
+    if value is None:
+        return Policy.default()
+    if isinstance(value, Policy):
+        return value
+    try:
+        return Policy.from_dict(value)
+    except PolicyError as e:
+        raise ConfigError(str(e)) from None
+
+
+def _check_policy_resources_consistent(policy: Policy,
+                                       resources: ResourceLimits) -> None:
+    """S-021/S-027: a policy may declare resource limits, but the
+    AUTHORITATIVE enforcement stays in RuntimeConfig.resources (ADR-007).
+    A policy declaring a limit that conflicts with the config's limits is
+    REJECTED - never a silent override and never a second enforcement
+    source. Only the declared (non-defaulted) keys are compared."""
+    if policy.resources is None:
+        return
+    config_values = {
+        "cpu_seconds": resources.cpu_seconds,
+        "memory_mb": resources.memory_mb,
+        "disk_mb": resources.disk_mb,
+        "processes": resources.processes,
+        "open_files": resources.open_files,
+        "output_mb": resources.output_mb,
+        "wall_time_seconds": resources.wall_time_seconds,
+        "cpu_quota_percent": resources.cpu_quota_percent,
+        "io_mbps": resources.io_mbps,
+    }
+    for key, value in policy.resources.items():
+        if config_values.get(key) != value:
+            raise ConfigError(
+                f"policy: resources.{key} = {value} conflicts with the "
+                f"configuration's resource limit {key} = "
+                f"{config_values.get(key)} - resource enforcement is "
+                "single-sourced (ADR-007); align the policy or the config")
 
 
 def _default_limits() -> ResourceLimits:

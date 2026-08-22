@@ -55,6 +55,8 @@ from agent_sandbox.audit import (
     EXECUTION_REQUEST,
     EXECUTION_RESULT,
     INIT_DECISION,
+    POLICY_DECISION,
+    POLICY_LOADED,
     SESSION_CREATED,
     AuditRecorder,
 )
@@ -470,12 +472,13 @@ class ApiAuditTests(unittest.TestCase):
         with open(audit_path, encoding="utf-8") as f:
             events = [json.loads(l) for l in f if l.strip()]
         self.assertEqual([e["event"] for e in events],
-                         [SESSION_CREATED, INIT_DECISION,
-                          EXECUTION_REQUEST, EXECUTION_RESULT])
+                         [SESSION_CREATED, POLICY_LOADED, INIT_DECISION,
+                          POLICY_DECISION, EXECUTION_REQUEST,
+                          EXECUTION_RESULT])
         for ev in events:
             self.assertEqual(ev["session_id"], payload["session_id"])
-        self.assertEqual(events[2]["command"], ["/workspace/tool"])
-        self.assertEqual(events[3]["exit_code"], 3)
+        self.assertEqual(events[4]["command"], ["/workspace/tool"])
+        self.assertEqual(events[5]["exit_code"], 3)
 
     def test_refusal_recorded(self):
         workspace = tempfile.mkdtemp(prefix="as-api-ws-")
@@ -492,10 +495,10 @@ class ApiAuditTests(unittest.TestCase):
         with open(audit_path, encoding="utf-8") as f:
             events = [json.loads(l) for l in f if l.strip()]
         self.assertEqual([e["event"] for e in events],
-                         [SESSION_CREATED, INIT_DECISION,
+                         [SESSION_CREATED, POLICY_LOADED, INIT_DECISION,
                           EXECUTION_REFUSED])
         self.assertIn("initialization did not succeed",
-                      events[2]["reason"])
+                      events[3]["reason"])
 
 
 class ApiStructuralGuardTests(unittest.TestCase):

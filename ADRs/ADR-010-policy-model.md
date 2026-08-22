@@ -40,6 +40,27 @@ be triggered deliberately, not silently).
   Phase 4); policy authoring is a new skill for users (mitigated by
   examples + validation errors that name the offending field).
 
+## Phase 4 implementation note (2026-08-22)
+
+The policy engine is implemented (implementation.md Phase 4):
+`agent_sandbox/policy.py` with the documented capability model, strict
+validation (unknown fields/capabilities rejected, version required),
+deny-by-default decisions, frozen/immutable Policy, host-side only.
+The single decision path (S-015) is enforced in
+`RuntimeSession.execute()` — the gate CLI/MCP/API all share (ADR-013) —
+before any boundary work, with policy_loaded/policy_decision audit events.
+CLI `--policy PATH` and the interface `policy` param expose it.
+
+**Parser decision — re-confirmed at Phase 4 as this ADR required**: the
+project carries zero runtime dependencies (`pyproject.toml` `dependencies
+= []`) and the TCB rule forbids adding one for convenience, so the
+documented zero-dependency fallback was taken: policy documents are
+strict-schema **JSON** parsed with the stdlib `json` module. PyYAML is
+**not** added to the TCB. Resource limits declared in a policy must be
+consistent with the config's limits (ADR-007 single source); a conflict
+rejects the policy (S-021/S-027) — never a silent second enforcement
+source.
+
 ## References
 
 ARCHITECTURE §12, §16; THREAT_MODEL T-040…T-045; design §25; security spec

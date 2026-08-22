@@ -657,5 +657,88 @@ class CleanupFailureVisibilityTests(unittest.TestCase):
         self.assertIn("survive", run.cleanup_failure)
 
 
+# ---------------------------------------------------------------------------
+# POLICY FAILURE - malformed/ambiguous policy rejects the session (S-021/S-018)
+# ---------------------------------------------------------------------------
+
+class PolicyFailClosedTests(unittest.TestCase):
+    """SECURITY_SPEC section 6 'Policy Failure': a policy that cannot be
+    parsed or validated must reject the policy and never start a session
+    - no warn-and-continue for security-critical policy (S-021), no
+    execution without a validated policy (S-018). The policy engine is
+    host-side TCB (Phase 4, ADR-010); these run everywhere."""
+
+    def setUp(self) -> None:
+        self._src = tempfile.mkdtemp(prefix="as-n1-policy-")
+        self.addCleanup(shutil.rmtree, self._src, True)
+
+    def _cfg_with_policy(self, policy_doc) -> RuntimeConfig:
+        data = valid_config(self._src)
+        data["policy"] = policy_doc
+        return data
+
+    def test_malformed_policy_rejected_at_config_boundary(self) -> None:
+        # Unknown security-critical capability -> ConfigError naming the
+        # field; the session cannot even be constructed (S-021).
+        from agent_sandbox.policy import PolicyError
+        data = self._cfg_with_policy({
+            "version": 1,
+            "capabilities": {"filesystem.read.host_root": True},
+        })
+        with self.assertRaises((config_mod.ConfigError, PolicyError)):
+            RuntimeConfig.from_dict(data)
+
+    def test_unknown_version_rejected(self) -> None:
+        data = self._cfg_with_policy({"version": 2})
+        with self.assertRaises(config_mod.ConfigError) as cm:
+            RuntimeConfig.from_dict(data)
+        self.assertIn("version", str(cm.exception))
+
+    def test_policy_resource_conflict_rejected(self) -> None:
+        # A policy declaring a limit that conflicts with the config is a
+        # rejected policy (S-027/S-021) - never a silent override.
+        data = self._cfg_with_policy({
+            "version": 1,
+            "resources": {"memory_mb": 12345},
+        })
+        with self.assertRaises(config_mod.ConfigError) as cm:
+            RuntimeConfig.from_dict(data)
+        self.assertIn("conflicts", str(cm.exception))
+
+    def test_invalid_policy_never_initializes(self) -> None:
+        # The session constructor path: an invalid policy raises at config
+        # construction, so SecurityInitializer is never even reached -
+        # fail closed before any mechanism stage (S-018).
+        data = self._cfg_with_policy({"version": 99})
+        with self.assertRaises(config_mod.ConfigError):
+            RuntimeConfig.from_dict(data)
+
+    def test_session_with_default_policy_initializes(self) -> None:
+        # Control row: the documented default policy validates and the
+        # session initializes (mechanism probes stubbed PASS so the
+        # wiring reaches READY; real probes exercised elsewhere).
+        with unittest.mock.patch.object(init_mod, "_is_linux",
+                                        return_value=True):
+            from agent_sandbox.isolation import setup as setup_mod
+            patches = []
+            for seam in ("_probe_impl", "_filesystem_probe_impl",
+                         "_network_probe_impl", "_privileges_probe_impl",
+                         "_seccomp_probe_impl", "_resources_probe_impl",
+                         "_environment_probe_impl", "_execution_probe_impl"):
+                patches.append(unittest.mock.patch.object(
+                    setup_mod, seam,
+                    return_value=StageCheck(ok=True, reason="ok (test)")))
+            for p in patches:
+                p.start()
+            try:
+                cfg = RuntimeConfig.from_dict(valid_config(self._src))
+                result = SecurityInitializer(cfg).initialize()
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+        self.assertTrue(result.ok, result.describe())
+        self.assertEqual(result.stage, InitStage.READY)
+
+
 if __name__ == "__main__":
     unittest.main()

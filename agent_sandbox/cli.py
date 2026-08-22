@@ -45,6 +45,7 @@ from agent_sandbox.models import (
     ExecutionRefused,
     ExecutionRequest,
 )
+from agent_sandbox.policy import PolicyError, load_policy_file
 from agent_sandbox.runtime.session import RuntimeSession
 
 EXIT_USAGE = 2
@@ -71,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audit", default=None, metavar="PATH",
                         help="append ADR-012 JSONL audit events to PATH "
                              "(host-side, observational)")
+    parser.add_argument("--policy", default=None, metavar="PATH",
+                        help="capability policy JSON document (version 1, "
+                             "ADR-010); validated host-side before the "
+                             "session starts - a malformed policy refuses "
+                             "to start (S-021)")
     # The command argv is split manually (see main): argparse's
     # REMAINDER keeps the '--' separator, which must never reach the
     # in-sandbox argv.
@@ -135,12 +141,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_USAGE
 
     # Validated, immutable configuration (never mutated after this).
+    # A supplied policy document is loaded + strictly validated BEFORE
+    # the session starts (fail closed, S-021): an unreadable or malformed
+    # policy is a usage error, never a session that silently ignores it.
     try:
+        policy = load_policy_file(args.policy) if args.policy else None
         config = RuntimeConfig.from_dict({
             "mode": args.mode,
             "workspace": args.workspace,
+            **({"policy": policy} if policy is not None else {}),
         })
-    except ConfigError as e:
+    except (ConfigError, PolicyError) as e:
         print(f"agent-sandbox: configuration error: {e}", file=sys.stderr)
         return EXIT_USAGE
 
