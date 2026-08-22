@@ -252,7 +252,7 @@ boundary:
 | Environment leakage | T-018, T-051 | `tests/unit/test_environment.py` |
 | Timeout / infinite run | T-034 | `tests/unit/test_timeout.py::DeadlineCollectionTests` |
 | Child persistence / cleanup | T-036, T-037, T-038 | `tests/unit/test_lifecycle.py` |
-| Policy bypass (CLI/MCP/API) | T-040, T-041, T-042 | `tests/unit/test_cli.py`, `test_mcp.py`, `test_api.py` (three-way equivalence) |
+| Policy bypass (CLI/MCP/API) | T-040, T-041, T-042 | `tests/unit/test_cli.py`, `test_mcp.py`, `test_api.py` (three-way equivalence); `tests/unit/test_cli_sessions.py` (Phase B command surface — create/exec/diff route through the sole policy gate; CLI/API refusal identical for a denied policy) |
 
 Failure-mode tests (Phase 3) cover every row of the §14 fail-closed table:
 namespace unavailable, network isolation failure, capability failure, seccomp
@@ -392,7 +392,7 @@ away):
 
 | Threat | Invariant | Evidence | Classification |
 |---|---|---|---|
-| T-040 CLI bypass of policy | S-015 | `test_policy.py::SessionPolicyGateTests` (denied capability refuses execution with deterministic reason before any boundary work); `test_cli.py::SessionExecuteTests` (refused session never reaches run_in_sandbox); `test_api.py::ApiEquivalenceTests` / `test_mcp.py` (three-way CLI/MCP/API equivalence — all share `RuntimeSession.execute()`'s policy gate, ADR-013) | HOST-SIDE: policy gate + shared decision path verified |
+| T-040 CLI bypass of policy | S-015 | `test_policy.py::SessionPolicyGateTests` (denied capability refuses execution with deterministic reason before any boundary work); `test_cli.py::SessionExecuteTests` (refused session never reaches run_in_sandbox); `test_cli_sessions.py::ExecTests` / `DiffTests` / `EquivalenceTests` (Phase B: exec/diff re-open persisted sessions with strict manifest re-validation (S-021) and route through the same `RuntimeSession.execute()` policy gate; a denied capability refuses before the boundary; `git.read` gates diff; CLI/API refusal payload identical for the same denied policy); `test_api.py::ApiEquivalenceTests` / `test_mcp.py` (three-way CLI/MCP/API equivalence) | HOST-SIDE: policy gate + shared decision path verified (Phase B surface); NATIVE (real sandbox): diff executes git inside the boundary where the ADR-005 toolchain provides git |
 | T-041 MCP bypass of policy | S-016 | `test_mcp.py` (no subprocess/os.system/os.popen; decision equivalence with CLI) | HOST-SIDE: MCP gate verified; three-way equivalence demo confirmed shared path |
 | T-042 API bypass of policy | S-017 | `test_api.py::ApiEquivalenceTests` (success/refusal/malformed/invalid equivalent across all three); `test_api.py::ApiStructuralGuardTests` (no execution primitives, no framework) | HOST-SIDE: API gate verified; three-way equivalence demo confirmed shared path |
 | T-043 Policy tampering from inside | S-025, S-026 | `test_policy.py::PolicyImmutabilityTests` (frozen Policy, read-only capability map, policy never enters the rootfs tree via the real `build_rootfs`); `test_lifecycle_attacks.py::PolicyTamperingTests` (in-sandbox tamper attempt contained) | HOST-SIDE: immutability + rootfs-absence verified; NATIVE VERIFIED (real boundary): in-sandbox tamper suite |
@@ -431,7 +431,7 @@ away):
 | Property | Evidence | Classification |
 |---|---|---|
 | CLI/MCP/API share single enforcement core | `interface.py` (SessionManager); `test_api.py::ApiEquivalenceTests` (three-way decision equivalence); integration demo (2026-08-20) | HOST-SIDE VERIFIED |
-| CLI cannot bypass policy | `test_cli.py::SessionExecuteTests` (refused session blocked, no shell); `test_cli.py::RequestValidationTests` | HOST-SIDE VERIFIED |
+| CLI cannot bypass policy | `test_cli.py::SessionExecuteTests` (refused session blocked, no shell); `test_cli.py::RequestValidationTests`; `test_cli_sessions.py` (create/exec/run/status/diff/logs/destroy all route through `RuntimeSession.execute()` — no alternate path; unknown/destroyed/tampered sessions fail closed exit 5; destroy never claims success on incomplete cleanup) | HOST-SIDE VERIFIED |
 | MCP cannot bypass policy | `test_mcp.py` (no subprocess/os.system; decision equivalence with CLI) | HOST-SIDE VERIFIED |
 | API cannot bypass policy | `test_api.py::ApiStructuralGuardTests` (no execution primitives, no framework); three-way equivalence | HOST-SIDE VERIFIED |
 | Refusal semantics equivalent | Integration demo: CLI exit 3/4, MCP -32602, API HTTP 400 -- all deterministic | HOST-SIDE VERIFIED |

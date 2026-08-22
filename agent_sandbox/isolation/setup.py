@@ -189,6 +189,12 @@ class SandboxRun:
                                # absence verification found a surviving
                                # workload process - never reported as
                                # successful (S-024)
+    sandbox_pid1: int | None = None  # the sandbox PID namespace init of
+                                     # this run (observational metadata for
+                                     # the caller's lifecycle management -
+                                     # the supervisor already owns/kills
+                                     # it; None when the run never produced
+                                     # a sandbox PID 1)
 
 
 def enter_all_namespaces() -> NamespaceState:
@@ -693,7 +699,9 @@ def _finish_run(status: int, text: str, sandbox_pid1: int,
                 "termination - S-038, never reported as successful")
     return SandboxRun(exit_code=os.waitstatus_to_exitcode(status),
                       output=text, truncated=truncated,
-                      timed_out=timed_out, cleanup_failure=cleanup_failure)
+                      timed_out=timed_out, cleanup_failure=cleanup_failure,
+                      sandbox_pid1=sandbox_pid1 if sandbox_pid1 >= 1
+                      else None)
 
 
 def _pid1_verification(state: NamespaceState) -> str:

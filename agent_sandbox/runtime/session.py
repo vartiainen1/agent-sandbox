@@ -70,17 +70,30 @@ def _can_fork() -> bool:
 
 
 class RuntimeSession:
-    def __init__(self, config: RuntimeConfig, audit=None):
+    def __init__(self, config: RuntimeConfig, audit=None,
+                 session_id: str | None = None):
         # Configuration is validated + immutable at construction (config.py);
         # we keep a private reference - no setter, no mutation path.
         self._config = config
         self._state = SessionState.UNINITIALIZED
         self._init_result: InitResult | None = None
         # Session identity (S-023): correlates audit events, decisions,
-        # and results for this sandbox instance.
-        self._session_id = uuid.uuid4().hex
+        # and results for this sandbox instance. An explicit session_id
+        # (e.g. a persisted CLI session being re-opened) is honored so the
+        # same identity spans supervisor-side instances; None -> a fresh
+        # identity is minted.
+        if session_id is not None and not isinstance(session_id, str):
+            raise TypeError("session_id must be a string or None")
+        self._session_id = session_id if session_id else uuid.uuid4().hex
         # Optional ADR-012 recorder (host-side, observational).
         self._audit = audit
+        # Observational lifecycle metadata for the caller (the CLI destroy
+        # command): the sandbox PID 1 and cgroup of the MOST RECENT run.
+        # Never an enforcement input - the sandbox is fully cleaned up
+        # inside execute() (S-038); these let a caller re-verify/kill an
+        # orphan if its own process was interrupted mid-run.
+        self._last_sandbox_pid1: int | None = None
+        self._last_cgroup_path: str | None = None
 
     # -- read-only surface -------------------------------------------------
     @property
@@ -98,6 +111,18 @@ class RuntimeSession:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def last_sandbox_pid1(self) -> int | None:
+        """The sandbox PID 1 of the most recent run, if any (observational
+        lifecycle metadata for the caller - never an enforcement input)."""
+        return self._last_sandbox_pid1
+
+    @property
+    def last_cgroup_path(self) -> str | None:
+        """The HARDENED session cgroup path of the most recent run, if
+        any (observational; the cgroup is removed inside execute())."""
+        return self._last_cgroup_path
 
     # -- audit helper (observational, never raises) -------------------------
     def _record(self, event: str, **fields) -> None:
@@ -213,6 +238,14 @@ class RuntimeSession:
                 cgroup_session=cgroup_session,
                 env_allowlist=self._config.env_allowlist,
             )
+            # Observational lifecycle metadata (CLI destroy): record the
+            # sandbox identity of this run so a caller can terminate/verify
+            # an orphan if its own process was interrupted mid-run. Purely
+            # informational - the run itself already terminated + verified
+            # absence (S-038).
+            self._last_sandbox_pid1 = run.sandbox_pid1
+            self._last_cgroup_path = (cgroup_session.path
+                                      if cgroup_session is not None else None)
         except NamespaceSetupError as e:
             # Host-side setup failure: the run never started - refusal.
             reason = f"execution setup failed: {e} - fail closed, workload " \
