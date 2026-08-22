@@ -81,6 +81,23 @@ are interfaces, never the boundary.
 | `SECURITY_SPEC.md` | The invariants (S-001…S-040) the implementation must demonstrate |
 | `ADRs/` | 14 architecture decision records |
 | `docs/seccomp-derivation/` | The reproducible seccomp allowlist derivation (methodology, classification, policy, verification) |
+| `RELEASE_CHECKLIST.md` | Phase 20 release hardening checklist — every v0.1 criterion with evidence-backed status |
+| `SECURITY_REVIEW.md` | Independent Security Review evidence package — prepared for external reviewer (NOT YET PERFORMED) |
+
+## Independent Security Review (implementation.md section 25)
+
+The implementation specification requires an independent security review
+before the project can claim production-ready status. The reviewer must
+not be the primary author of the security-critical implementation.
+
+**Status: REQUIRED / NOT YET PERFORMED**
+
+`SECURITY_REVIEW.md` contains the reviewer-ready evidence package covering
+all 13 security-review areas (trust boundaries, privileged code, namespace
+setup, filesystem handling, network enforcement, capability configuration,
+seccomp, resource controls, policy enforcement, lifecycle cleanup, race
+conditions, MCP/API authorization, audit integrity). The project must NOT
+claim production-ready status solely from internal testing.
 
 ## Seccomp derivation (Phase 1 pre-task)
 
