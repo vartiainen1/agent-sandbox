@@ -44,6 +44,26 @@ critical runtime; no alternate security path exists):
         lifecycle mechanism, VERIFIES absence (S-038), and removes the
         session state. Incomplete cleanup is reported explicitly and the
         session is NOT marked destroyed (retryable).
+    agent-sandbox git      <session-id> <operation> [--json]
+                           [-- git args ...]
+        Safe Git workflow (implementation.md Phase 9, Phase C): the
+        operation set is CLOSED and READ-ONLY - status | diff | changed
+        | untracked | deleted | base | current - mapped to the builtin
+        git commands status/ls-files/merge-base/rev-parse, executed
+        INSIDE the sandbox against /workspace with a sanitized argv that
+        neutralizes hostile repository configuration (see
+        agent_sandbox/git.py: core.fsmonitor, diff.external/textconv,
+        aliases, credential helpers, hooks, ssh, pager/editor, submodule
+        recursion - all overridden via highest-precedence -c flags and
+        diff --no-ext-diff/--no-textconv). The repository is hostile
+        input: it can never select executables, invoke helpers, reach
+        host credentials, use the network, or escape /workspace - the
+        sandbox boundary is the enforcement layer. Every operation is
+        gated on the git.read policy capability through the shared
+        decision path (S-015) BEFORE the sandbox runs. `base` requires a
+        ref: agent-sandbox git <id> base -- <ref> (merge-base HEAD ref);
+        `current` is rev-parse HEAD. Anything outside the set is a usage
+        error (fail closed), never a passthrough.
 
 Commands are ARGV VECTORS (never shell strings); shell metacharacters
 are data, never interpreted. The execve bridge runs the command INSIDE
@@ -74,6 +94,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Sequence
 
+from agent_sandbox import git as git_mod
 from agent_sandbox import registry
 from agent_sandbox.audit import AuditRecorder
 from agent_sandbox.config import RuntimeConfig
@@ -91,7 +112,8 @@ EXIT_EXEC_REFUSED = 4
 EXIT_SESSION_ERROR = 5
 EXIT_DESTROY_INCOMPLETE = 6
 
-COMMANDS = ("create", "exec", "run", "status", "diff", "logs", "destroy")
+COMMANDS = ("create", "exec", "run", "status", "diff", "logs",
+            "destroy", "git")
 _MODE_CHOICES = ("hardened", "restricted", "compatibility")
 
 
@@ -544,7 +566,8 @@ def _cmd_status(argv: list[str], base: str) -> int:
 def _cmd_diff(argv: list[str], base: str) -> int:
     """``git diff`` INSIDE the sandbox on /workspace (repository
     contents treated as untrusted - never read host-side), gated on the
-    ``git.read`` policy capability through the shared decision path."""
+    ``git.read`` policy capability through the shared decision path.
+    Uses the Phase C sanitized git argv (hostile-config neutralization)."""
     opt_argv, git_args = _split_command(argv)
     parser = argparse.ArgumentParser(
         prog="agent-sandbox diff",
@@ -558,9 +581,40 @@ def _cmd_diff(argv: list[str], base: str) -> int:
         args = parser.parse_args(opt_argv)
     except SystemExit:
         return EXIT_USAGE
-    command = ["git", "diff", *git_args]
+    command = list(git_mod.sanitized_git_argv("diff", git_args))
     return _run_session_command(base, args.session_id, command,
                                 args.json, "diff",
+                                extra_policy=("git.read",))
+
+
+def _cmd_git(argv: list[str], base: str) -> int:
+    """Safe Git workflow (Phase C): a CLOSED read-only operation set
+    (status/diff/changed/untracked/deleted/base/current) executed INSIDE
+    the sandbox with the sanitized argv (hostile repository = untrusted
+    input). Every operation is gated on ``git.read`` through the shared
+    decision path (S-015) BEFORE the sandbox runs; anything outside the
+    set is a usage error (fail closed), never a passthrough."""
+    opt_argv, git_args = _split_command(argv)
+    parser = argparse.ArgumentParser(
+        prog="agent-sandbox git",
+        description="Safe Git workflow INSIDE the sandbox (Phase C): "
+                    "status/diff/changed/untracked/deleted/base/current "
+                    "- a closed read-only set, gated on git.read.")
+    parser.add_argument("session_id",
+                        help="the session id returned by create")
+    parser.add_argument("operation",
+                        choices=git_mod.GIT_OPERATIONS,
+                        help="the closed read-only git operation "
+                             f"({', '.join(git_mod.GIT_OPERATIONS)})")
+    parser.add_argument("--json", action="store_true",
+                        help="machine-readable result")
+    try:
+        args = parser.parse_args(opt_argv)
+    except SystemExit:
+        return EXIT_USAGE
+    command = list(git_mod.sanitized_git_argv(args.operation, git_args))
+    return _run_session_command(base, args.session_id, command,
+                                args.json, "git",
                                 extra_policy=("git.read",))
 
 
@@ -728,6 +782,8 @@ def main(argv: Sequence[str] | None = None,
             return _cmd_logs(rest, base)
         if cmd == "destroy":
             return _cmd_destroy(rest, base)
+        if cmd == "git":
+            return _cmd_git(rest, base)
     # Legacy one-shot form (no subcommand) == run.
     return _cmd_run(raw)
 

@@ -67,10 +67,12 @@ from agent_sandbox.isolation import rootfs as rootfs_mod
 from agent_sandbox.isolation import seccomp as seccomp_mod
 from agent_sandbox.isolation import setup as setup_mod
 from agent_sandbox.isolation import userns
+from agent_sandbox import cli as cli_mod
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import (
     ExecutionRefused,
     ExecutionRequest,
+    ExecutionResult,
     InitFailureCode,
     InitResult,
     InitStage,
@@ -81,6 +83,9 @@ from agent_sandbox.runtime import session as session_mod
 from agent_sandbox.runtime.session import RuntimeSession, SessionState
 from agent_sandbox.security import init as init_mod
 from agent_sandbox.security.init import SecurityInitializer
+
+from tests.unit.test_cli import _ready_session_context
+from tests.unit.test_cli_sessions import _CliTestCase, _run_cli
 
 LINUX = sys.platform.startswith("linux") and hasattr(os, "fork")
 
@@ -738,6 +743,82 @@ class PolicyFailClosedTests(unittest.TestCase):
                     p.stop()
         self.assertTrue(result.ok, result.describe())
         self.assertEqual(result.stage, InitStage.READY)
+
+
+class GitFailClosedTests(_CliTestCase):
+    """Phase C (implementation.md Phase 9): the safe Git workflow is a
+    closed read-only set with hostile-configuration control. A request
+    outside the set, a denied git.read capability, or a broken session
+    must fail closed - never a passthrough and never a silent grant."""
+
+    def _cli(self, argv):
+        return _run_cli(argv, self.base)
+
+    def test_operation_outside_closed_set_rejected(self) -> None:
+        # commit/push/fetch/checkout/submodule etc. are NOT part of the
+        # Phase C read-only set - requesting them fails closed at argv
+        # construction (never a passthrough to a write/network surface).
+        from agent_sandbox import git as git_mod
+        for op in ("commit", "push", "fetch", "checkout", "submodule",
+                   "add", "clone", "apply"):
+            with self.assertRaises(ValueError, msg=op):
+                git_mod.sanitized_git_argv(op)
+
+    def test_unknown_git_operation_cli_usage_error(self) -> None:
+        # The CLI refuses an operation outside the closed set with a
+        # usage error (exit 2) - the sandbox never runs.
+        sid = self.create_session()
+        code, _, err = self._cli(["git", sid, "commit", "--json"])
+        self.assertEqual(code, cli_mod.EXIT_USAGE)
+        self.assertIn("invalid choice", err)
+
+    def test_denied_git_read_refuses_before_sandbox(self) -> None:
+        # git.read absent -> denied by default (S-015): the git
+        # operation refuses BEFORE any boundary work.
+        policy_path = os.path.join(self.base, "policy.json")
+        with open(policy_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "capabilities": {
+                "filesystem.read.workspace": True,
+                "filesystem.write.workspace": True,
+                "process.spawn": True,
+            }}, f)
+        sid = self.create_session(policy_path=policy_path)
+        with _ready_session_context(None):
+            with unittest.mock.patch.object(
+                    setup_mod, "run_in_sandbox",
+                    side_effect=AssertionError(
+                        "denied git op must never reach the boundary")):
+                code, out, _ = self._cli(
+                    ["git", sid, "status", "--json"])
+        self.assertEqual(code, cli_mod.EXIT_EXEC_REFUSED)
+        payload = json.loads(out)
+        self.assertTrue(payload["refused"])
+        self.assertIn("git.read", payload["reason"])
+        self.assertIn("DENIED", payload["reason"])
+
+    def test_git_op_on_destroyed_session_exit_5(self) -> None:
+        sid = self.create_session()
+        code, _, _ = self._cli(["destroy", sid, "--json"])
+        self.assertEqual(code, 0)
+        code, out, _ = self._cli(["git", sid, "status", "--json"])
+        self.assertEqual(code, cli_mod.EXIT_SESSION_ERROR)
+        self.assertIn("unknown session", out)
+
+    def test_git_op_with_default_policy_passes_gate(self) -> None:
+        # Control row: with the documented default policy (git.read
+        # allowed) the git operation passes the policy gate and reaches
+        # the boundary path (here patched - the real boundary is the
+        # Linux-gated suite).
+        sid = self.create_session()
+        with _ready_session_context(None):
+            with unittest.mock.patch.object(
+                    RuntimeSession, "execute") as ex:
+                ex.return_value = ExecutionResult(
+                    session_id=sid, mode=SecurityMode.RESTRICTED,
+                    exit_code=0, output=" M a.txt\n")
+                code, _, _ = self._cli(["git", sid, "status", "--json"])
+        self.assertEqual(code, 0)
+        ex.assert_called_once()
 
 
 if __name__ == "__main__":

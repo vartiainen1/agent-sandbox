@@ -421,7 +421,18 @@ class DiffTests(_CliTestCase):
                     ["diff", sid, "--json"], self.base)
         self.assertEqual(code, 0)
         request = ex.call_args.args[0]
-        self.assertEqual(request.command, ("git", "diff"))
+        # The sanitized Phase C git argv (hostile-config neutralization).
+        command = request.command
+        self.assertEqual(command[0], "git")
+        self.assertIn("diff", command)
+        self.assertIn("--no-ext-diff", command)
+        self.assertIn("--no-textconv", command)
+        self.assertIn("-C", command)
+        self.assertEqual(command[command.index("-C") + 1], "/workspace")
+        self.assertIn("-c", command)
+        self.assertIn("alias.diff=diff", command)
+        self.assertIn("core.fsmonitor=", command)
+        self.assertIn("credential.helper=", command)
         self.assertIn("+two", json.loads(out)["output"])
 
     def test_diff_passes_git_args_verbatim(self):
@@ -436,8 +447,11 @@ class DiffTests(_CliTestCase):
                     ["diff", sid, "--json", "--", "--stat",
                      "HEAD~1"], self.base)
         request = ex.call_args.args[0]
-        self.assertEqual(request.command,
-                         ("git", "diff", "--stat", "HEAD~1"))
+        # Caller git args are appended VERBATIM after the sanitized
+        # fixed flags (argv is data).
+        command = request.command
+        self.assertEqual(command[0], "git")
+        self.assertEqual(command[-2:], ("--stat", "HEAD~1"))
 
     def test_diff_denied_git_read_refuses_before_boundary(self):
         policy = self._write_policy({

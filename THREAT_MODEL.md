@@ -200,6 +200,7 @@ mitigation — residual risk — evidence (test class).
 | T-052 | Kernel information disclosure via `/proc`/`/sys`/syscalls | S-002 | `hidepid=2`; `/sys` absent; seccomp | Kernel metadata leaks are a residual kernel risk | adversarial: proc/sys suite |
 | T-053 | Audit tampering or fabrication from inside | S-022, S-024 | Recorder host-side, outside the sandbox filesystem; workload cannot write it | Audit integrity vs. a compromised *supervisor* is out of scope (TCB compromise) | security: audit suite |
 | T-054 | Audit failure misread as protection | S-024 | Documented: audit failure does not stop execution; enforcement is kernel-side; failure is itself reported | None expected | security: audit-failure suite |
+| T-055 | Git configuration selects executables / invokes helpers (hostile repo config) | S-015, S-032 | Closed read-only git op set (status/diff/changed/untracked/deleted/base/current) + sanitized argv (highest-precedence `-c` overrides neutralize `core.fsmonitor`, `diff.external`/textconv, aliases, credential helpers, hooks, ssh, pager/editor, submodule recursion, protocol) + `git.read` policy gate; git runs inside the boundary so any residual execution is contained | A git bug could over-execute — contained by the boundary | adversarial: git-config suite |
 
 ---
 
@@ -217,6 +218,7 @@ boundary:
 | Attack category | Threats | Committed test module |
 |---|---|---|
 | Malicious Git hooks | T-047 | `tests/adversarial/test_content_attacks.py::HookAttackTests` |
+| Hostile Git config (fsmonitor/ext-diff/textconv/aliases/credential/submodule/escape) | T-055 | `tests/adversarial/test_git_attacks.py::HostileConfigContainmentTests` (host-git control + sanitized-argv containment), `SandboxGitContainmentTests` (real boundary) |
 | Malicious deps / install | T-048 | `tests/adversarial/test_content_attacks.py::DependencyAttackTests` |
 | Malicious build/test scripts | T-049 | `tests/adversarial/test_content_attacks.py::BuildScriptAttackTests` |
 | Path traversal | T-001, T-002 | `tests/adversarial/test_filesystem_attacks.py::PathTraversalTests`, `AbsolutePathEscapeTests` |
@@ -408,6 +410,7 @@ away):
 | T-048 Malicious dependencies | S-033 | `test_content_attacks.py::DependencyAttackTests` (install payload executes inside, privileged fs modification attempt contained, no host modification, cleanup complete) | NATIVE VERIFIED (real boundary): dependency suite |
 | T-049 Malicious build/test scripts | S-032 | `test_content_attacks.py::BuildScriptAttackTests` (script executes inside, protected host data read + write-outside-workspace attempt contained, no credential leak, cleanup complete) | NATIVE VERIFIED (real boundary): build-script suite |
 | T-050 Prompt injection | S-015 | `test_policy.py::SessionPolicyGateTests` (requests gated on required capabilities — injected instructions cannot grant capabilities the policy denies); `test_lifecycle_attacks.py::PromptInjectionTests` (injected instructions contained, no host effect) | HOST-SIDE: policy-gated decision path verified; NATIVE VERIFIED (real boundary): injection suite |
+| T-055 Hostile Git config | S-015, S-032 | `test_git_attacks.py::HostileConfigContainmentTests` (control proves plain `git diff` executes hostile external-diff + fsmonitor scripts; sanitized argv runs status/diff with ZERO hostile execution — aliases, diff.external, textconv, fsmonitor incl. include.path-amplified, credential helpers, hooks all neutralized — empirically verified against the fixture); `test_git_workflow.py` (closed op set — commit/push/fetch/checkout/submodule refused; git.read denial refuses before the boundary; `git` CLI routing through the sole execution path); `SandboxGitContainmentTests` (real boundary: hostile repo status/diff/hook payloads/symlink+gitfile escapes contained — no host file ever created, cleanup verified) | HOST-SIDE VERIFIED: config-control layer (control + sanitized containment); NATIVE (real boundary): sandbox containment suite (substrate-gated) |
 
 ### 10.9 Observation and information leakage threats
 
