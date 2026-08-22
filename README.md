@@ -16,7 +16,7 @@ audited.
 | Layer | Status |
 |---|---|
 | Architecture + threat model (Phase 0) | **COMPLETE** — `ARCHITECTURE.md`, `THREAT_MODEL.md`, `SECURITY_SPEC.md`, `ADRs/` |
-| Seccomp syscall allowlist derivation (Phase 1 pre-task) | **COMPLETE, container-validated** — 45-syscall HARDENED allowlist, behaviorally verified |
+| Seccomp syscall allowlist derivation (Phase 1 pre-task) | **COMPLETE, container-validated** — 46-syscall HARDENED allowlist (45 derived + the documented 2026-08-22 `+chdir` for the Phase C git closed set, policy.md §5 change record), behaviorally verified |
 | Runtime implementation (Phase 1) | **COMPLETE (Steps 1–16)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) + `/proc` isolation (`hidepid=2`), minimal `/dev` (six identity-verified bind-mounted nodes, ADR-015), `/sys` absence (Step 4) + network namespace deny-by-construction (only `lo` DOWN, no addresses/routes, no usable path — Step 5) + no_new_privs (Step 6) + full capability reduction (Step 7) + seccomp filter installation (Step 8) + rlimits (Step 9) + cgroup v2 enforcement module (Step 10) + environment sanitization (Step 11, the approved six-variable sandbox environment — host env never inherited, S-034) + credential/socket isolation (Step 12 — host credential/control-socket paths absent, socket env vars never survive, socket creation denied by the filter, S-003/S-004) + bounded stdout/stderr (Step 13 — S-037 bounded supervisor pipe, terminate + truncation notice, workload cannot bypass) + external timeout enforcement (Step 14 — S-036 supervisor wall-clock deadline, session termination, workload cannot disable/evade/reset) + process-tree containment and cleanup (Step 15 — S-014 child subreaper + namespace-init kill + cgroup.kill where delegated + mandatory S-038 absence verification, survivors never reported as success) + minimal successful workload demonstration (Step 16 — item 22: a workload executes end-to-end through the complete boundary, returning deterministic output and observing the invariants from inside) implemented and tested; the full mandated Phase 1 order (items 1–22) is complete |
 | Interfaces (CLI/MCP/API) | **COMPLETE** — three thin front-ends (ADR-013) over the SOLE execution path `RuntimeSession.execute(ExecutionRequest) -> run_in_sandbox()`, sharing one session core (`agent_sandbox/interface` — the same initialize/execute code for MCP and API); CLI (`python -m agent_sandbox`): argv-only (`--` separator), `--json` exposes mode + session identity, deterministic exit codes; **Phase B command surface (implementation.md Phase 8)**: `create`/`exec`/`run`/`status`/`diff`/`logs`/`destroy` — `create` validates policy + initializes fail-closed and persists a validated session under the caller-owned state dir (`AGENT_SANDBOX_STATE_DIR` or `~/.agent-sandbox`, never mounted into the sandbox); `exec`/`status`/`diff`/`logs`/`destroy` re-open it with STRICT re-validation (unknown/destroyed session or malformed/tampered manifest fails closed, exit 5 — never executed); `diff` runs `git diff` INSIDE the sandbox on /workspace gated on the `git.read` capability (repository contents treated as untrusted, never read host-side); `logs` exposes the session's ADR-012 audit events observationally (S-024 — missing/malformed audit is empty, never an execution blocker) with S-023 session correlation; `destroy` terminates any live sandbox via the existing lifecycle mechanism, VERIFIES absence (S-038) and never claims success on incomplete cleanup (exit 6, retryable); every command routes through the same `RuntimeSession.execute()` READY/REFUSED + policy gate (S-015) — no alternate security path, no subprocess/os.system/execve in the CLI (structural guard); MCP (`python -m agent_sandbox.mcp`): stdio JSON-RPC 2.0, minimum surface (`initialize` + `execute`), id preservation, deterministic -32700/-32600/-32601/-32602/-32603 errors, no host details leak; API (`python -m agent_sandbox.api`): stdlib-only HTTP (zero dependencies), `POST /initialize` + `POST /execute`, loopback-only default bind, deterministic 400/404/405/413/500 errors (internal failures are a fixed generic message); three-way CLI/MCP/API decision equivalence tested (same ExecutionRequest, same payload fields, mode + session identity); the execve bridge runs commands INSIDE the sandbox (workspace-provided binaries; the minimal rootfs has no system binaries — unavailable commands fail deterministically, never on the host); minimal host-side JSONL audit recorder (ADR-012, observational, open-per-record so no audit fd crosses the fork boundary) |
 | Phase 2 — adversarial validation | **ACCEPTED AND FROZEN** — P1 (T-047/48/49, commit 5408ce3) + P2 (18 HOST-SIDE-only threats, commit dc1590a) + exec-bridge regression: 59/59 in-sandbox adversarial tests PASS through the real `RuntimeSession.execute() -> run_in_sandbox()` boundary; evidence reconciled in `THREAT_MODEL.md` §7/§10 (22 threats NATIVE VERIFIED, 24 DOCKER VERIFIED, 7 HOST-SIDE, 2 DESIGN INTENT); seccomp regression gate repaired and PASS (allowlist exactly 45, tier0=27/tier1=18); full suite green (Windows 547 run / 0 failures; Docker 547 run / 1 documented non-root environment failure); no enforcement boundary weakened; **P3 HARDENED end-to-end VERIFIED (NATIVE)** (commit 7c1c30e — Ubuntu 24.04 / kernel 6.8 / x86_64 native QEMU VM, caller-owned delegated cgroup subtree, 24/24 PASS, 0 skips/errors); **P4 aarch64 runtime enforcement remains SUBSTRATE-LIMITED / NOT VERIFIED** (native aarch64 required) |
@@ -82,7 +82,9 @@ are interfaces, never the boundary.
 The HARDENED syscall allowlist is a **derived, regression-protected
 security artifact** — not a hardcoded list and not "whatever strace
 happened to see". The workload set (Tier 0 `echo hello`-class, Tier 1
-coreutils + CPython + git) makes exactly **45 syscalls**; the policy
+coreutils + CPython + git) makes exactly **46 syscalls** (45 derived +
+the documented 2026-08-22 `+chdir` for the git closed set — native
+verification, policy.md §5 change record); the policy
 allows exactly those (default-deny EPERM), and the behavioral probe
 verifies both halves: legitimate workloads pass, and
 `socket`/`ptrace`/`mount`/`chroot`/`unshare`/`clone` return EPERM.
@@ -92,8 +94,10 @@ verifies both halves: legitimate workloads pass, and
   outside the allowlist (no undocumented expansion)
 - Change control: `docs/seccomp-derivation/policy.md` §5
 - Known limitations: threads (`clone`) and networking syscalls are denied
-  by design in v0.1; the x86_64 allowlist (45 syscalls) remains exactly 45,
-  and an independently derived aarch64 allowlist (43 syscalls, commit
+  by design in v0.1; the x86_64 allowlist is exactly 46 (tier0=27,
+  tier1=19 — the only change from the frozen Phase-2 baseline of 45 is the
+  documented 2026-08-22 `+chdir` for the Phase C git closed set, policy.md
+  §5), and an independently derived aarch64 allowlist (43 syscalls, commit
   a5338da) is regression-gated with BPF construction verified — but aarch64
   filter installation/enforcement remains NOT VERIFIED until a native
   aarch64 host is available. The rootless
@@ -112,7 +116,7 @@ verifies both halves: legitimate workloads pass, and
   cleared effective/permitted/inheritable/ambient sets are verified by
   read-back (Step 7, S-009 — the workload holds no capabilities, which
   resolves the Step 5 lo-toggle residual: without CAP_NET_ADMIN the
-  workload cannot bring its own loopback up); the derived 45-syscall
+  workload  cannot bring its own loopback up); the derived 46-syscall
   default-deny seccomp filter is installed as the LAST Stage-A operation
   and verified by kernel-observable read-back + forbidden-syscall EPERM
   enforcement, with fork/exec inheritance  (Step 8, S-011 — the socket

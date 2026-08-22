@@ -11,10 +11,12 @@ is a CI job pending repo publish (user decision) — see
 ## Result in one paragraph
 
 The workload set (Tier 0: `echo hello`-class; Tier 1: coreutils + CPython
-+ git) makes exactly **45 syscalls** under `strace -f`, and **zero**
-occurrences of the dangerous classes (`clone`/`socket`/`unshare`/`setns`/
++ git) makes exactly **46 syscalls** under `strace -f` (45 derived + the
+documented 2026-08-22 `+chdir` for the Phase C git closed set — see
+policy.md §5 change record), and **zero** occurrences of the dangerous
+classes (`clone`/`socket`/`unshare`/`setns`/
 `mount`/`ptrace` were never called). The derived HARDENED policy allows
-exactly those 45 (default-deny EPERM otherwise), is installed after all
+exactly those 46 (default-deny EPERM otherwise), is installed after all
 initialization and immediately before the workload exec, and was verified
 behaviorally: legit workloads pass, and `socket`/`ptrace`/`mount`/`chroot`/
 `unshare`/`clone` all return EPERM. Documented limitations: no threads

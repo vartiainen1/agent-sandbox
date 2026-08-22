@@ -1,5 +1,5 @@
 """Phase 1 Step 8 tests - seccomp filter installation (REAL Linux
-execution, S-011, ADR-008): the derived 45-syscall default-deny filter is
+execution, S-011, ADR-008): the derived 46-syscall default-deny filter is
 installed as the LAST Stage-A operation (after no_new_privs + capability
 reduction) and verified by kernel-observable read-back (Seccomp=2,
 Seccomp_filters=1) plus a forbidden-syscall spot check. Install failure,
@@ -41,10 +41,12 @@ skip_unless_linux = unittest.skipUnless(
     LINUX, "real seccomp operations require Linux with os.fork "
            "(non-Linux fail-closed behavior is covered by test_skeleton.py)")
 
-# The 45-syscall derived allowlist (pinned - NO UNDOCUMENTED EXPANSION;
+# The 46-syscall derived allowlist (pinned - NO UNDOCUMENTED EXPANSION;
 # policy.md section 5). Any change must go through the derivation process.
+# 46 = 27 tier0 + 19 tier1: +chdir (tier1) added 2026-08-22 for the Phase C
+# closed-set git workload (native verification, see allowlist.json changelog).
 EXPECTED_ALLOWLIST = [
-    "access", "arch_prctl", "brk", "close", "dup2", "epoll_create1",
+    "access", "arch_prctl", "brk", "chdir", "close", "dup2", "epoll_create1",
     "execve", "exit_group", "fcntl", "fstat", "futex", "getcwd",
     "getdents64", "getegid", "geteuid", "getgid", "getpid", "getppid",
     "getrandom", "gettid", "getuid", "ioctl", "lseek", "mkdir", "mmap",
@@ -142,12 +144,12 @@ class SeccompHostTests(unittest.TestCase):
 
     def test_allowlist_loaded_from_artifact(self):
         allow, numbers = sc_mod.load_allowlist()
-        self.assertEqual(len(allow), 45)
-        self.assertEqual(len(set(allow)), 45, "allowlist must be unique")
+        self.assertEqual(len(allow), 46)
+        self.assertEqual(len(set(allow)), 46, "allowlist must be unique")
         self.assertEqual(allow, sorted(allow), "allowlist must be sorted")
 
     def test_allowlist_not_silently_expanded(self):
-        # Pins the exact 45-syscall set - NO UNDOCUMENTED SYSCALL
+        # Pins the exact 46-syscall set - NO UNDOCUMENTED SYSCALL
         # EXPANSION (policy.md section 5). A change here requires the
         # full derivation process.
         allow, _ = sc_mod.load_allowlist()
@@ -169,7 +171,7 @@ class SeccompHostTests(unittest.TestCase):
         # mismatch), then the JEQ allow chain, default RET_ERRNO|EPERM
         # BEFORE the trailing RET ALLOW (policy.md section 1).
         prog = sc_mod.build_program(EXPECTED_ALLOWLIST)
-        self.assertEqual(len(prog), 4 + 45 + 2)
+        self.assertEqual(len(prog), 4 + 46 + 2)
         self.assertEqual(prog[0], (0x20, 0, 0, sc_mod._OFF_ARCH))       # LD arch
         self.assertEqual(prog[1], (0x15, 1, 0, sc_mod.AUDIT_ARCH_X86_64))  # JEQ arch
         self.assertEqual(prog[2], (0x06, 0, 0, sc_mod.SECCOMP_RET_KILL_PROCESS))
@@ -505,7 +507,7 @@ class SeccompProbeTests(unittest.TestCase):
         cfg = RuntimeConfig.from_dict(valid_config(src))
         check = setup._seccomp_probe_impl(cfg)
         self.assertTrue(check.ok, check.reason)
-        self.assertIn("45-syscall default-deny", check.reason)
+        self.assertIn("46-syscall default-deny", check.reason)
         self.assertIn("EPERM", check.reason)
 
     @skip_unless_linux

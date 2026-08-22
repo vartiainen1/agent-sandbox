@@ -31,7 +31,7 @@ SYS = {
     "rt_sigprocmask": 14, "rt_sigreturn": 15, "ioctl": 16, "pread64": 17,
     "access": 21,    "dup2": 33, "getpid": 39, "vfork": 58, "execve": 59,
     "exit_group": 231, "wait4": 61, "fcntl": 72, "getcwd": 79,
-    "mkdir": 83, "unlink": 87,
+    "chdir": 80, "mkdir": 83, "unlink": 87,
     "readlink": 89, "getuid": 102, "getgid": 104, "geteuid": 107,
     "getegid": 108, "getppid": 110, "arch_prctl": 158, "gettid": 186,
     "futex": 202, "getdents64": 217, "set_tid_address": 218,

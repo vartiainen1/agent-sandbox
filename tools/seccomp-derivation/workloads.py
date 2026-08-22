@@ -51,6 +51,24 @@ WORKLOADS = {
         "printf 'x\\n' > /tmp/g/f; git -C /tmp/g add f; "
         "git -C /tmp/g -c core.pager=cat status --short",
     ],
+    # git: the Phase C CLOSED read-only operation set exactly as the
+    # sanitized argv runs it INSIDE the sandbox (status/diff/changed/
+    # untracked/deleted/base/current -> status/ls-files/merge-base/
+    # rev-parse with -C <worktree>). Added 2026-08-22 during the native
+    # Phase C verification: git requires chdir (the -C handling and the
+    # work-tree-top resolution), which the container-era t1_git_basics
+    # trace under-recorded; the native closed-set trace captures the real
+    # surface. The repo /tmp/gc must exist with >= 1 commit (prepared by
+    # the caller; git init/config/add/commit are NOT part of the closed
+    # set and are intentionally outside this workload).
+    "t1_git_closedset": [
+        "/bin/sh", "-c",
+        "set -e; git -C /tmp/gc status --short; "
+        "git -C /tmp/gc diff -- f; "
+        "git -C /tmp/gc rev-parse HEAD; "
+        "git -C /tmp/gc ls-files; "
+        "git -C /tmp/gc merge-base HEAD HEAD",
+    ],
 }
 
 

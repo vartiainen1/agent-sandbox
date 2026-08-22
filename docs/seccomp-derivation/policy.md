@@ -22,20 +22,21 @@ exercise (methodology + classification) · Implementation: Phase 1 step 13
 
 ## 2. The allowlist (Stage B — workload execution)
 
-45 syscalls, all derived and classified in `syscall-classification.md`:
+46 syscalls (27 tier0 + 19 tier1), all derived and classified in
+`syscall-classification.md`:
 
-    access arch_prctl brk close dup2 epoll_create1 execve exit_group
-    fcntl fstat futex getcwd getdents64 getegid geteuid getgid getpid
-    getppid getrandom gettid getuid ioctl lseek mkdir mmap mprotect
-    munmap newfstatat openat pipe2 poll pread64 prlimit64 read readlink
-    rseq rt_sigaction rt_sigprocmask rt_sigreturn set_robust_list
-    set_tid_address unlink vfork wait4 write
+    access arch_prctl brk chdir close dup2 epoll_create1 execve
+    exit_group fcntl fstat futex getcwd getdents64 getegid geteuid
+    getgid getpid getppid getrandom gettid getuid ioctl lseek mkdir
+    mmap mprotect munmap newfstatat openat pipe2 poll pread64 prlimit64
+    read readlink rseq rt_sigaction rt_sigprocmask rt_sigreturn
+    set_robust_list set_tid_address unlink vfork wait4 write
 
 Machine-readable form (single source of truth):
 `tools/seccomp-derivation/allowlist.json`. The behavioral probe loads it;
 the regression gate (`check_trace_regression.py`) fails any observed
 syscall outside it; the unit suite (`test_derivation.py`) pins its
-integrity (45, sorted, unique, default action).
+integrity (46, sorted, unique, default action).
 
 ## 3. What is denied and why (summary)
 
@@ -92,6 +93,31 @@ The allowlist is a regression-protected security artifact
 5. `allowlist.json` is the machine-readable source of truth; the probe
    loads it, the gate checks against it, and the unit suite pins its
    integrity — this document is the rationale.
+
+### Change record
+
+- **2026-08-22 — `+chdir` (tier1, 45 → 46; tier0=27, tier1=19).** Native
+  Phase C verification (Ubuntu 24.04 / kernel 6.8 / x86_64, git 2.43.0)
+  proved the closed-set git workflow cannot execute inside the sandbox
+  without `chdir`: every closed-set operation (`status`/`diff`/
+  `ls-files`/`merge-base`/`rev-parse`, sanitized argv with `-C
+  /workspace`) chdirs for the worktree handling and work-tree-top
+  resolution, and the default-deny filter returned EPERM (`fatal: cannot
+  change to '/workspace': Operation not permitted`). Host/native strace
+  of the exact closed set: 38 distinct syscalls, of which `chdir` is the
+  ONLY one outside the prior 45-allowlist (no fork/clone needed;
+  helpers neutralized). Security impact: `chdir` is cwd-only — no
+  privilege gain, no namespace/network/filesystem-boundary escape; the
+  path-set enforcement remains the rootfs/`pivot_root` boundary (§4).
+  Evidence: `trace-results.json` `t1_git_closedset` (native trace),
+  `tests/adversarial/test_git_attacks.py` `SandboxGitContainmentTests`
+  4/4 PASS on the native substrate, `tests/native/test_hardened_e2e.py`
+  re-run green. Tooling fix in the same change: `trace_workloads.py`
+  `parse_trace` now handles strace's `[pid NNNN]` fork-child line prefix
+  (the container-era records under-recorded forked-child syscalls — the
+  reason git's `chdir` was absent from the derivation); the historical
+  container records are preserved verbatim with a note in
+  `trace-results.json`.
 
 ## 6. Known limitations (documented, not hidden)
 

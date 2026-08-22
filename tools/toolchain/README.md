@@ -84,5 +84,8 @@ system layer would let the workload tamper its own toolchain.
 - No new device or network exposure: `/dev` stays the six-node minimal
   inventory (ADR-015), `/sys` stays absent (ADR-005), the netns
   deny-by-construction is unchanged.
-- No new syscalls: the allowlist (exactly 45 on x86_64) was derived
-  from these same python/coreutils/git workloads.
+- No new syscalls: the allowlist was derived from these same
+  python/coreutils/git workloads. (46 on x86_64 as of the documented
+  2026-08-22 `+chdir` for the git closed set — see
+  docs/seccomp-derivation/policy.md §5; the toolchain adds no syscalls
+  itself.)

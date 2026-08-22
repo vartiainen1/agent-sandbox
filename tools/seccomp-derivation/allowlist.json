@@ -1,12 +1,23 @@
 {
   "artifact": "agent-sandbox HARDENED seccomp syscall allowlist",
-  "version": 1,
+  "version": 2,
   "arch": "x86_64",
   "derived": "2026-08-19",
   "derivation_docs": "docs/seccomp-derivation/ (methodology.md, syscall-classification.md)",
   "default_action": "SECCOMP_RET_ERRNO | EPERM (deny)",
   "install_point": "after all Stage-A initialization, immediately before workload exec (never before no_new_privs)",
   "change_control": "docs/seccomp-derivation/policy.md section 5: NO UNDOCUMENTED SYSCALL EXPANSION. Any change requires an explicit diff, a documented reason, a security-impact assessment, relevant test changes, and a docs/ADR update. check_trace_regression.py fails any observed syscall outside this list.",
+  "changelog": [
+    {
+      "date": "2026-08-22",
+      "syscall": "chdir",
+      "tier": 1,
+      "delta": "45 -> 46 (tier0=27, tier1=19)",
+      "reason": "Native Phase C verification on Ubuntu 24.04 / kernel 6.8 / x86_64: git 2.43.0 (ADR-005 toolchain) requires chdir for the closed-set operations (status/diff/ls-files/merge-base/rev-parse) - the -C worktree handling and work-tree-top resolution. Host-side strace of the exact closed set shows 31 distinct syscalls of which chdir is the ONLY one missing from the allowlist (no fork/clone needed; helpers neutralized). Without it git fails inside the sandbox with 'fatal: cannot change to ...: Operation not permitted' (EPERM from the default-deny filter).",
+      "security_impact": "chdir is a cwd-only syscall (same class as the already-allowed getcwd): no privilege gain, no namespace/network/filesystem-boundary escape. The path-set enforcement remains the rootfs/pivot_root boundary (division of labor, policy.md section 4); chdir cannot leave the rootfs.",
+      "evidence": "tools/seccomp-derivation/trace-results.json t1_git_closedset (native VM trace, 2026-08-22); tests/adversarial/test_git_attacks.py SandboxGitContainmentTests 4/4 PASS on the native substrate; tests/native/test_hardened_e2e.py re-run green."
+    }
+  ],
   "limitations": "Docker/container-validated evidence so far; native ubuntu CI re-run authoritative. Threads (clone) and networking syscalls denied by design. glibc/x86_64-specific. Rootless uid-mapped execution NOT yet validated (Phase 1).",
   "tier0": [
     "access", "arch_prctl", "brk", "close", "execve", "exit_group", "fstat",
@@ -16,12 +27,13 @@
     "set_robust_list", "set_tid_address", "write"
   ],
   "tier1": [
-    "dup2", "epoll_create1", "fcntl", "futex", "getdents64", "gettid",
-    "ioctl", "lseek", "mkdir", "newfstatat", "pipe2", "poll", "readlink",
-    "rt_sigprocmask", "rt_sigreturn", "unlink", "vfork", "wait4"
+    "chdir", "dup2", "epoll_create1", "fcntl", "futex", "getdents64",
+    "gettid", "ioctl", "lseek", "mkdir", "newfstatat", "pipe2", "poll",
+    "readlink", "rt_sigprocmask", "rt_sigreturn", "unlink", "vfork",
+    "wait4"
   ],
   "allowlist": [
-    "access", "arch_prctl", "brk", "close", "dup2", "epoll_create1",
+    "access", "arch_prctl", "brk", "chdir", "close", "dup2", "epoll_create1",
     "execve", "exit_group", "fcntl", "fstat", "futex", "getcwd",
     "getdents64", "getegid", "geteuid", "getgid", "getpid", "getppid",
     "getrandom", "gettid", "getuid", "ioctl", "lseek", "mkdir", "mmap",

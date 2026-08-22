@@ -8,7 +8,7 @@
   "install_point": "after all Stage-A initialization, immediately before workload exec (never before no_new_privs)",
   "change_control": "docs/seccomp-derivation/policy.md section 5: NO UNDOCUMENTED SYSCALL EXPANSION.",
   "limitations": "aarch64 derivation via QEMU user-mode emulation on Docker Desktop. strace unavailable (PTRACE_TRACEME not implemented under QEMU). Derivation uses the same workload set as x86_64; syscall names are identical (generic Linux ABI); numbers differ per aarch64 asm-generic/unistd.h.",
-  "parent_artifact": "allowlist.json (x86_64, 45 syscalls)",
+  "parent_artifact": "allowlist.json (x86_64, 46 syscalls; +chdir 2026-08-22)",
   "derivation_notes": "x86_64 arch_prctl (TLS segment register) removed \u2014 not applicable on aarch64. x86_64 vfork removed \u2014 glibc on aarch64 uses clone(CLONE_VM|SIGCHLD) internally. access->faccessat, dup2->dup3, mkdir->mkdirat, poll->ppoll, readlink->readlinkat, unlink->unlinkat \u2014 aarch64 has no legacy syscalls, glibc uses *at() variants.",
   "tier0": [
     "brk",

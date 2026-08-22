@@ -1171,7 +1171,7 @@ def _seccomp_probe_impl(config) -> StageCheck:
     if msg == "OK":
         return StageCheck(
             ok=True,
-            reason="derived 45-syscall default-deny seccomp filter built "
+            reason="derived 46-syscall default-deny seccomp filter built "
                    "from allowlist.json, installed LAST in PID 1 after "
                    "no_new_privs + capability reduction, kernel-state "
                    "read-back verified (Seccomp mode = SECCOMP_MODE_FILTER, "

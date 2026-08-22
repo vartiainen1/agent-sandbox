@@ -1,6 +1,6 @@
 """Seccomp allowlist regression gate.
 
-The derived 45-syscall HARDENED allowlist is a security artifact
+The derived 46-syscall HARDENED allowlist is a security artifact
 (allowlist.json). This tool FAILS any trace whose observed syscall set
 contains a syscall NOT in the allowlist - i.e. an accidental or
 undocumented syscall expansion is detected.
@@ -24,7 +24,7 @@ import json
 import pathlib
 import sys
 
-EXPECTED_COUNT_X86_64 = 45
+EXPECTED_COUNT_X86_64 = 46
 EXPECTED_COUNT_AARCH64 = 43
 
 HERE = pathlib.Path(__file__).resolve().parent

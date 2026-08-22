@@ -11,9 +11,10 @@ allowlist.
 
 The policy is NOT re-derived or embedded here: the single source of
 truth is the regression-protected artifact
-``tools/seccomp-derivation/allowlist.json`` (45 syscalls, default-deny
-EPERM; change control in policy.md section 5 - NO UNDOCUMENTED SYSCALL
-EXPANSION). This module loads it at program-build time on the trusted
+``tools/seccomp-derivation/allowlist.json`` (46 syscalls as of the
+2026-08-22 documented +chdir expansion for the git closed set; default-
+deny EPERM; change control in policy.md section 5 - NO UNDOCUMENTED
+SYSCALL EXPANSION). This module loads it at program-build time on the trusted
 host side, builds the identical default-deny BPF (same instruction
 layout as the derivation probe: architecture guard -> KILL on mismatch,
 linear JEQ allow chain, trailing RET ALLOW, default RET_ERRNO|EPERM),
@@ -78,7 +79,8 @@ _EPERM = 1
 # cross-checked with the derivation probe's SYS table). The runtime only
 # ever loads these on x86_64 (architecture guard below).
 _X86_64 = {
-    "access": 21, "arch_prctl": 158, "brk": 12, "close": 3, "dup2": 33,
+    "access": 21, "arch_prctl": 158, "brk": 12, "chdir": 80, "close": 3,
+    "dup2": 33,
     "epoll_create1": 291, "execve": 59, "exit_group": 231, "fcntl": 72,
     "fstat": 5, "futex": 202, "getcwd": 79, "getdents64": 217,
     "getegid": 108, "geteuid": 107, "getgid": 104, "getpid": 39,

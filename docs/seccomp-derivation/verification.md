@@ -406,7 +406,7 @@ the full rootless path remains NOT VERIFIED NATIVE (recorded reason).
 
 Mechanism implemented (`agent_sandbox/isolation/seccomp.py`, per
 policy.md - the sanctioned Phase-1 implementation): the derived
-45-syscall default-deny filter is BUILT from the regression-protected
+46-syscall default-deny filter is BUILT from the regression-protected
 artifact `tools/seccomp-derivation/allowlist.json` (single source of
 truth - no embedded copy, no parallel policy) host-side in the setup
 child BEFORE entering the boundary (the artifact is unreachable inside
@@ -927,7 +927,7 @@ register (item 20 - process-tree containment - is outstanding), so the
 isolated modes keep refusing at EXECUTION (fail closed).
 
 Note: the workload cannot sleep (nanosleep is NOT in the derived
-45-syscall allowlist - no expansion), so the sandbox-internal timeout
+46-syscall allowlist - no expansion), so the sandbox-internal timeout
 tests hang the workload on an ALLOWLISTED blocking read of a pipe it
 creates itself, or stall mid-output - the hang is legal under the filter.
 
@@ -1107,7 +1107,7 @@ minimal ADR-012 audit recorder. MCP (sub-phase B) follows after review.
   interface code carries no security policy.
 - The execve bridge (`agent_sandbox/execution/`) represents the CLI
   command as a workload fn that `os.execve`s the argv INSIDE the
-  established sandbox (execve is in the 45-syscall allowlist).
+  established sandbox (execve is in the 46-syscall allowlist).
   stdout/stderr + exit status continue through the Step 13-15 bounded
   output, external timeout, and process-tree machinery; the exec'd
   command inherits the sanitized six-variable environment.
@@ -1314,8 +1314,9 @@ probe tests.
   environment-premise result, not a sandbox boundary failure), 10
   documented skips (delegation-premise tests correctly skipping on the
   delegation-capable substrate).
-- x86_64 seccomp gate: exactly 45 syscalls (tier0=27, tier1=18), no
-  expansion.
+- x86_64 seccomp gate: exactly 46 syscalls (tier0=27, tier1=19), no
+  expansion (the documented 2026-08-22 `+chdir` is the only change from
+  the frozen Phase-2 baseline of exactly 45 — see the addendum below).
 
 ### Scope of the claim
 
@@ -1330,3 +1331,62 @@ probe tests.
   WSL2 run, commit e3b9873, preserved as historical evidence).
 - aarch64 runtime filter installation/enforcement remains NOT VERIFIED
   (native aarch64 substrate required).
+
+---
+
+## Addendum 2026-08-22 — native git closed-set verification (+chdir)
+
+**Finding (F-1, native, NOT a substrate limitation):** on the documented
+P3 substrate (Ubuntu 24.04 / kernel 6.8 / x86_64, ADR-005 toolchain git
+2.43.0), every Phase C closed-set git operation failed inside the
+HARDENED sandbox with `fatal: cannot change to '/workspace': Operation
+not permitted` (exit 128). The toolchain git binary executes fine inside
+the boundary (`git --version` works); the failure is the default-deny
+filter returning EPERM for `chdir`, which git requires for the `-C`
+worktree handling and work-tree-top resolution.
+
+**Evidence:**
+
+- Host/native strace of the exact closed set (`status`/`diff`/
+  `rev-parse`/`ls-files`/`merge-base`, sanitized argv with `-C`): 38
+  distinct syscalls total; `chdir` is the ONLY one missing from the
+  prior 45-allowlist (no fork/clone needed — the sanitized argv
+  neutralizes helpers/pager, so git never spawns a subprocess).
+- Tracer re-run (fixed `parse_trace`, see below): `t1_git_closedset`
+  native record in `trace-results.json` — `chdir` observed 7×; observed
+  set ⊆ 46-allowlist; regression gate PASS.
+- Direct in-sandbox probe on the native substrate (HARDENED READY,
+  delegated root-cgroup): `git current`/`git status` fail with the EPERM
+  fatal above; after `+chdir` they execute and return real output.
+
+**Root cause of the derivation gap:** `trace_workloads.py` `parse_trace`
+only matched lines starting with a syscall name; `strace -f` prefixes
+every forked-child line with `[pid NNNN]`, so all git child-process
+syscalls (including `chdir`) were silently dropped from the trace
+record — the container-era `t1_git_basics` record under-recorded git's
+surface for this reason. Tooling fix applied (parser handles the `[pid
+NNNN]` prefix; test_derivation.py locks it with `[pid]`-prefixed sample
+lines). Historical container-era records are preserved verbatim with a
+note in `trace-results.json`.
+
+**Change (documented expansion per policy.md §5):** `chdir` added to the
+x86_64 allowlist as tier1 — **45 → 46 (tier0=27, tier1=19)**.
+`allowlist.json` (v2, changelog), `syscall-classification.md` (row +
+count), `policy.md` (§2 list + change record), `probe_policy.py` and
+`seccomp.py` syscall tables (`chdir` = 80), unit pins
+(`test_seccomp.py` exact set, `test_derivation.py` count), gate
+(`check_trace_regression.py` expected 46).
+
+**Security impact:** `chdir` is cwd-only — no privilege gain, no
+namespace/network/filesystem-boundary escape; the rootfs/`pivot_root`
+boundary remains the path-set enforcement (division of labor, policy.md
+§4). No other syscall was added; the forbidden classes (socket, clone,
+ptrace, mount, etc.) are unchanged.
+
+**Result after the fix (native):** `SandboxGitContainmentTests` 4/4 PASS
+(hostile repo status/diff/hook/symlink-gitfile containment through the
+real boundary); native P3 suite re-run green (26 run, 1 documented
+delegation-capable skip); hostile-config host-side tests unchanged
+PASS. The Phase C real-boundary evidence classification moves from
+"blocked/skipped (misleading reason)" to **NATIVE VERIFIED** on the
+documented substrate.

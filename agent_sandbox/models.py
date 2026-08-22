@@ -44,7 +44,7 @@ class InitStage(str, enum.Enum):
     FILESYSTEM = "filesystem"              # mechanism: rootfs/pivot_root/workspace/proc/dev/sys (Steps 3-9)
     NETWORK = "network"                    # mechanism: network namespace, deny by construction (Step 10)
     PRIVILEGES = "privileges"              # mechanism: no_new_privs + capability drop (Steps 11-12)
-    SECCOMP = "seccomp"                    # mechanism: derived 45-syscall filter (Step 13)
+    SECCOMP = "seccomp"                    # mechanism: derived 46-syscall filter (Step 13)
     RESOURCES = "resources"                # mechanism: rlimits + cgroups v2 (Steps 14-15)
     ENVIRONMENT = "environment"            # mechanism: env sanitization, credentials/sockets (Steps 16-17)
     EXECUTION = "execution"                # mechanism: bounded output, timeout, process tree, cleanup verification (Steps 18-21)

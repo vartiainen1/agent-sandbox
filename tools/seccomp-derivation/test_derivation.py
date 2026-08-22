@@ -4,7 +4,7 @@ Run: python3 test_derivation.py   (exit 0 = all pass)
 
 Covers:
 - trace parser (parse_trace) on sample strace output
-- allowlist.json artifact integrity (45, sorted, unique, tiers, default action)
+- allowlist.json artifact integrity (46, sorted, unique, tiers, default action)
 - trace regression gate: detects undocumented expansion; passes on the
   committed evidence record
 - BPF builder structure (instruction layout, default-deny before allow)
@@ -45,16 +45,24 @@ sample = (
     "write(1, \"hi\\n\", 3) = 3\n"
     "<unfinished ...>\n"
     "getpid() = 42\n"
+    # forked-child lines carry a [pid N] prefix under strace -f; these
+    # must be counted (2026-08-22 fix - the container-era trace dropped
+    # them, which hid git's chdir) and child status lines must not leak
+    "[pid 97779] chdir(\"/tmp/gc\") = 0\n"
+    "[pid 97779] --- SIGCHLD {si_signo=SIGCHLD} ---\n"
+    "[pid 97779] +++ exited with 0 +++\n"
+    "[pid 97779] openat(AT_FDCWD, \"/tmp/g/f\", O_WRONLY) = 4\n"
 )
 counts, argdetail = trace_workloads.parse_trace(sample)
-check("parse_trace counts syscall calls", counts["openat"] == 1 and counts["write"] == 1)
+check("parse_trace counts syscall calls", counts["openat"] == 2 and counts["write"] == 1)
+check("parse_trace counts forked-child syscalls", counts["chdir"] == 1)
 check("parse_trace skips SIG/exited/unfinished lines", "SIGCHLD" not in counts and "exited" not in counts)
 check("parse_trace captures getpid", counts["getpid"] == 1)
 
 # --- artifact integrity ---
 artifact = json.loads((HERE / "allowlist.json").read_text(encoding="utf-8"))
 allow = artifact["allowlist"]
-check("allowlist has exactly 45 syscalls", len(allow) == 45)
+check("allowlist has exactly 46 syscalls", len(allow) == 46)
 check("allowlist is sorted", allow == sorted(allow))
 check("allowlist has no duplicates", len(set(allow)) == len(allow))
 check("tier0 + tier1 == allowlist", set(artifact["tier0"]) | set(artifact["tier1"]) == set(allow))

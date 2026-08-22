@@ -15,7 +15,7 @@ Legend:
 
 ---
 
-## 1. Allowed syscalls (45)
+## 1. Allowed syscalls (46)
 
 ### 1.1 Process lifecycle and creation
 
@@ -66,6 +66,7 @@ Legend:
 | `access` | 0 | glibc/git | No | permission checks fail | None | ALLOW |
 | `readlink` | 1 | Python/glibc | No | symlink resolution fails | None | ALLOW |
 | `getcwd` | 0 | shell/Python | No | cwd queries fail | None | ALLOW |
+| `chdir` | 1 | git (`-C` worktree handling and work-tree-top resolution); `cd` in shells | No (Tier 1 — git closed set) | every Phase C git operation fails inside the sandbox with `fatal: cannot change to ...: Operation not permitted` (observed EPERM on native Ubuntu 24.04 / kernel 6.8, git 2.43.0 — 2026-08-22) | None — cwd-only (same class as `getcwd`); cannot escape the rootfs/`pivot_root` path boundary, cannot change namespaces, privileges, or network state. The path-set enforcement remains the filesystem boundary (division of labor, policy.md §4) | ALLOW |
 | `mkdir` | 1 | coreutils | No | directory creation broken | None | ALLOW |
 | `unlink` | 1 | `rm` | No | file deletion broken | None | ALLOW |
 | `dup2` | 1 | shell redirection | No | redirection broken | None | ALLOW |
@@ -87,8 +88,11 @@ Legend:
 | `getgid` | 0 | glibc | No | identity queries fail | None | ALLOW |
 | `getegid` | 0 | glibc | No | identity queries fail | None | ALLOW |
 
-**Count: 45 ALLOW.** No syscall in the allowed set enables privilege
-escalation, namespace manipulation, process inspection of the host, or
+**Count: 46 ALLOW** (27 tier0 + 19 tier1; +`chdir` added 2026-08-22 per the
+change-control process in policy.md §5 — native closed-set git trace in
+`trace-results.json` `t1_git_closedset`). No syscall in the allowed set
+enables privilege escalation, namespace manipulation, process inspection
+of the host, or
 networking on its own; the three broad ones (`ioctl`, `prlimit64`,
 `openat`) are documented above with the layers that bound them.
 

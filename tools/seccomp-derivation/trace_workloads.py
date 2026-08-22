@@ -38,8 +38,17 @@ from collections import Counter
 from workloads import WORKLOADS, tier_of
 
 # syscall line:  openat(AT_FDCWD, "/tmp/x", O_RDONLY...) = 3
-SYSCALL_RE = re.compile(r"^\s*([a-z0-9_]+)\(")
-# lines that are NOT syscall calls
+# With -f, strace prefixes every FORKED-CHILD line with "[pid NNNN] "
+# (e.g. "[pid 97779] execve(...)"); without handling that prefix the
+# child's syscalls are silently dropped from the record. Fixed
+# 2026-08-22 during the native Phase C verification: the container-era
+# trace under-recorded git's surface (chdir etc.) for exactly this
+# reason, which is why git's closed-set chdir requirement was absent
+# from the derived allowlist.
+SYSCALL_RE = re.compile(r"^\s*(?:\[pid\s+\d+\]\s*)?([a-z0-9_]+)\(")
+# lines that are NOT syscall calls (checked AFTER any [pid NNNN] strip,
+# so child "--- SIGCHLD" / "+++ exited" / "<unfinished>" lines are
+# still dropped)
 SKIP_PREFIXES = ("---", "+++", "strace:", " <", "(", "= ?", "unfinished", "resumed")
 # syscalls we capture argument summaries for (arg-level seccomp rules)
 ARGCAPTURE = {"clone", "clone3", "unshare", "socket", "socketpair", "setns"}

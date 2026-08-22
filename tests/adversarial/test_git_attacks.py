@@ -275,15 +275,47 @@ class SandboxGitContainmentTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def _probe_git(self, sid):
-        # Does the sandbox toolchain provide git? Honest gate: a
-        # substrate without git in the ADR-005 toolchain is a skip with
-        # reason, never a pass.
+        # Does the sandbox toolchain provide git? Honest gate that
+        # distinguishes the two failure classes (per the 2026-08-22
+        # native Phase C finding):
+        #   (a) git binary genuinely unavailable inside the boundary
+        #       (execve ENOENT -> the workload reports
+        #       "FAIL workload: FileNotFoundError ... No such file or
+        #       directory: 'git'", sandbox exit 1) -> a missing-tool
+        #       skip with reason, never a pass.
+        #   (b) git IS present but the sandbox boundary blocks it
+        #       (e.g. a denied syscall such as chdir -> git's own
+        #       "fatal: ... Operation not permitted", exit 128) -> a
+        #       REAL boundary/policy failure: the test must FAIL, never
+        #       masquerade as a missing-tool skip.
         import json
         code, out, _ = self._git(sid, "current")
-        if code != 0:
-            self.skipTest("ADR-005 toolchain lacks git inside the "
-                          "sandbox on this substrate "
-                          f"(git --version probe exit={code})")
+        if code == 0:
+            return
+        try:
+            payload = json.loads(out)
+        except ValueError:
+            payload = {}
+        output = payload.get("output", "") or ""
+        reason = payload.get("reason", "") or ""
+        missing_tool = (
+            payload.get("refused") is True
+            or "FAIL workload" in output
+            or "no such file or directory" in output.lower()
+            or "not found" in reason.lower()
+        )
+        if missing_tool:
+            self.skipTest(
+                "ADR-005 toolchain lacks git inside the sandbox on "
+                "this substrate (git binary not resolvable inside the "
+                "boundary: probe exit=%s)" % code)
+        self.fail(
+            "git IS present in the ADR-005 toolchain but cannot execute "
+            "inside the sandbox boundary - a real boundary/policy "
+            f"failure, never a missing-tool skip: probe exit={code}, "
+            f"output={output!r}, reason={reason!r} "
+            "(expected e.g. 'fatal: ... Operation not permitted' from a "
+            "denied syscall such as chdir)")
 
     def test_hostile_repo_status_contained(self):
         import json

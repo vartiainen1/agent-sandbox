@@ -112,6 +112,25 @@ class GitArgvTests(unittest.TestCase):
         self.assertIn("--no-ext-diff", argv)
         self.assertIn("--no-textconv", argv)
 
+    def test_closed_set_syscall_dependency_chdir_allowed(self):
+        # The closed-set git operations require chdir (git -C /workspace
+        # plus work-tree-top resolution) - the seccomp allowlist MUST
+        # keep it (native Phase C finding 2026-08-22: without chdir git
+        # fails inside the sandbox with EPERM "fatal: cannot change to
+        # ..."). Regression: removing chdir from the allowlist fails
+        # here immediately, before any native run is needed.
+        import json
+        from pathlib import Path
+        allowlist = json.loads(
+            (Path(__file__).resolve().parents[2]
+             / "tools/seccomp-derivation/allowlist.json").read_text(
+                encoding="utf-8"))
+        self.assertIn("chdir", allowlist["allowlist"])
+        self.assertEqual(
+            len(allowlist["tier0"]) + len(allowlist["tier1"]), 46)
+        self.assertEqual(allowlist["tier0"], sorted(allowlist["tier0"]))
+        self.assertEqual(allowlist["tier1"], sorted(allowlist["tier1"]))
+
     def test_caller_args_appended_verbatim(self):
         argv = git_mod.sanitized_git_argv("status", ("--", "a b; c"))
         self.assertEqual(argv[-2:], ("--", "a b; c"))
