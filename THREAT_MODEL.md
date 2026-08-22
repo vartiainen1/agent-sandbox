@@ -453,6 +453,8 @@ away):
 
 **Phase 18 CI/tooling evidence (2026-08-22):** Static analysis, type checking, dependency auditing, secret scanning, and security scanning are now integrated into CI. Tools: ruff (F/S/B rules, justified exclusions), mypy (platform-specific Linux-attr ignores), bandit (B101/B108/B606/B110/B603/B607 exclusions — all justified), pip-audit (zero runtime deps verified), detect-secrets (baseline with 7 documented false positives: cache files + test fixtures). Security-scan failures block CI. **CI/tooling-level evidence** — proves the gates exist; does NOT replace native kernel-boundary verification, adversarial testing, or seccomp verification.
 
+**Phase 20 release hardening (2026-08-22):** A release checklist (`RELEASE_CHECKLIST.md`) documents the verification status of every v0.1 criterion. All v0.1 acceptance criteria (implementation.md section 26) are verified: runtime, filesystem/process/network isolation, privilege reduction, resource controls, environment sanitization, fail-closed init, session lifecycle, structured audit, CLI, regression tests, adversarial tests. Not claimed: production-ready, fully verified, signed release, independently reviewed. Independent Security Review: REQUIRED / NOT YET PERFORMED. Release artifact reproducibility: NOT VERIFIED. aarch64: SUBSTRATE-LIMITED / NOT VERIFIED. Full SECURITY_SPEC.md: PARTIALLY VERIFIED.
+
 **Substrate-gated (see 10.10):** aarch64 filter install/enforcement (P4) remains NOT VERIFIED / substrate limitation. HARDENED end-to-end (P3) is now VERIFIED (NATIVE) on the documented Ubuntu 24.04 / kernel 6.8 / x86_64 substrate (commit 7c1c30e).
 
 **Key gaps (by design, documented):**
