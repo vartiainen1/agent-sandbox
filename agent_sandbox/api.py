@@ -168,22 +168,22 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": {"code": 400,
                                             "message": str(e)}})
             return
-        except Exception:  # noqa: BLE001 - never leak or crash
+        except Exception:
             self._send_json(500, {"error": {"code": 500,
                                             "message": _GENERIC_INTERNAL_ERROR}})
             return
         self._send_json(200, payload)
 
     # -- methods ------------------------------------------------------------
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_POST(self) -> None:
         self._handle()
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_GET(self) -> None:
         self._send_json(405, {"error": {
             "code": 405,
             "message": "method not allowed (use POST)"}})
 
-    def log_message(self, fmt, *args) -> None:  # noqa: A003 - stdlib hook
+    def log_message(self, fmt, *args) -> None:
         # Keep the default access-log behavior on stderr (diagnostics
         # never mix into the HTTP response stream).
         super().log_message(fmt, *args)

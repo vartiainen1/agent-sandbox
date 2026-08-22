@@ -451,6 +451,8 @@ away):
 | HOST-SIDE VERIFIED | 7 | Policy/interface/mode gate verified host-side or on CI (no runtime attack test) |
 | DESIGN INTENT | 2 | T-015 (SSRF), T-017 (DNS) -- deferred to v0.2 (no network in v0.1) |
 
+**Phase 18 CI/tooling evidence (2026-08-22):** Static analysis, type checking, dependency auditing, secret scanning, and security scanning are now integrated into CI. Tools: ruff (F/S/B rules, justified exclusions), mypy (platform-specific Linux-attr ignores), bandit (B101/B108/B606/B110/B603/B607 exclusions — all justified), pip-audit (zero runtime deps verified), detect-secrets (baseline with 7 documented false positives: cache files + test fixtures). Security-scan failures block CI. **CI/tooling-level evidence** — proves the gates exist; does NOT replace native kernel-boundary verification, adversarial testing, or seccomp verification.
+
 **Substrate-gated (see 10.10):** aarch64 filter install/enforcement (P4) remains NOT VERIFIED / substrate limitation. HARDENED end-to-end (P3) is now VERIFIED (NATIVE) on the documented Ubuntu 24.04 / kernel 6.8 / x86_64 substrate (commit 7c1c30e).
 
 **Key gaps (by design, documented):**

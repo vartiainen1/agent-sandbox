@@ -192,7 +192,7 @@ class ToolchainBuildIntegrityTests(unittest.TestCase):
         try:
             bt._run(["dpkg", "--version"])
             bt._run(["ldd", "--version"])
-        except Exception as e:  # noqa: BLE001 - environment reason
+        except Exception as e:
             self.skipTest(f"dpkg/ldd unavailable: {e}")
         tmp = tempfile.mkdtemp(prefix="as-tcb-")
         self.addCleanup(shutil.rmtree, tmp, True)

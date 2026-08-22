@@ -61,7 +61,7 @@ never reads the repository, and never uses subprocess/os.system/execve.
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 # The closed, read-only Phase C operation set (implementation.md Phase 9).
 # A request for anything else is a usage error - never a passthrough.

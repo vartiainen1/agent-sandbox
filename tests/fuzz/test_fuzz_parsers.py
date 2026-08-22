@@ -63,7 +63,6 @@ from agent_sandbox.policy import (
     PolicyError,
     load_policy_file,
 )
-
 from tests.fuzz import _fuzzutil
 
 # Fixed seeds / bounded budgets (CI-fast, fully deterministic).
@@ -107,9 +106,9 @@ def _only(expected: tuple[type[Exception], ...]):
     def wrap(call):
         try:
             return call(), None
-        except expected as e:  # noqa: PERF203 - the documented seam errors
+        except expected as e:
             return None, e
-        except Exception as e:  # noqa: BLE001 - fail the test loudly
+        except Exception as e:
             raise AssertionError(
                 f"unexpected exception escaped the interface: "
                 f"{type(e).__name__}: {e}") from e

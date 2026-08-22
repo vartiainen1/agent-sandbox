@@ -27,12 +27,18 @@ import unittest
 import unittest.mock
 from dataclasses import FrozenInstanceError
 
-from agent_sandbox import config as config_mod
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.isolation import setup as setup_mod
 from agent_sandbox.models import (
-    ConfigError, ExecutionRefused, ExecutionRequest, InitFailureCode,
-    InitResult, InitStage, SecurityMode, StageCheck)
+    ConfigError,
+    ExecutionRefused,
+    ExecutionRequest,
+    InitFailureCode,
+    InitResult,
+    InitStage,
+    SecurityMode,
+    StageCheck,
+)
 from agent_sandbox.runtime.session import RuntimeSession, SessionState
 from agent_sandbox.security import init as init_mod
 from agent_sandbox.security.init import SecurityInitializer, init_sequence

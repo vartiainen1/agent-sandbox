@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import signal
-from typing import Callable
+from collections.abc import Callable
 
 # KiB/MiB conversions kept explicit (no ambiguous "1024 vs 1000").
 KIB = 1024

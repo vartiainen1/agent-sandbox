@@ -25,7 +25,6 @@ only; does NOT replace native kernel-boundary verification.
 
 from __future__ import annotations
 
-import json
 import os
 import pathlib
 import tempfile
@@ -35,7 +34,6 @@ import uuid
 
 from agent_sandbox import cli as cli_mod
 from agent_sandbox import registry
-from agent_sandbox.audit.recorder import AuditRecorder
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.policy import Policy
 

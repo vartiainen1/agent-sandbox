@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import stat as stat_mod
 import tempfile
 from dataclasses import dataclass
 

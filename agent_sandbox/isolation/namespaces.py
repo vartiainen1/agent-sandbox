@@ -46,7 +46,7 @@ def ns_identity() -> dict[str, str]:
         try:
             with open(path, "rb") as f:
                 out[name] = str(os.fstat(f.fileno()).st_ino)
-        except OSError as e:
+        except OSError:
             out[name] = "unavailable"
     return out
 

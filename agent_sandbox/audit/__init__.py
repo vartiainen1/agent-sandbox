@@ -13,12 +13,12 @@ from agent_sandbox.audit.recorder import (
 )
 
 __all__ = [
-    "SESSION_CREATED",
-    "INIT_DECISION",
-    "POLICY_LOADED",
-    "POLICY_DECISION",
+    "EXECUTION_REFUSED",
     "EXECUTION_REQUEST",
     "EXECUTION_RESULT",
-    "EXECUTION_REFUSED",
+    "INIT_DECISION",
+    "POLICY_DECISION",
+    "POLICY_LOADED",
+    "SESSION_CREATED",
     "AuditRecorder",
 ]

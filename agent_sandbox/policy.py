@@ -62,8 +62,8 @@ from __future__ import annotations
 
 import json
 import types
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 from agent_sandbox.models import ConfigError
 
@@ -171,7 +171,7 @@ class Policy:
 
     # -- construction -----------------------------------------------------
     @classmethod
-    def from_dict(cls, data) -> "Policy":
+    def from_dict(cls, data) -> Policy:
         """Build + strictly validate a policy from a dict. Rejects unknown
         fields, unknown capabilities, malformed values and an unsupported
         version with a deterministic ``PolicyError`` naming the field
@@ -223,7 +223,7 @@ class Policy:
                    resources=resources)
 
     @classmethod
-    def default(cls) -> "Policy":
+    def default(cls) -> Policy:
         """The documented v0.1 default policy (deny by default except the
         workspace/process/git-read surface the runtime actually provides)."""
         return cls(version=POLICY_VERSION,

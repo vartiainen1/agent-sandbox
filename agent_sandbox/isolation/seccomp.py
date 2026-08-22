@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import ctypes
 import json
-import os
 import pathlib
 import platform
 import socket

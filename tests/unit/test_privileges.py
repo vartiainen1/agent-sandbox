@@ -27,8 +27,7 @@ import unittest.mock
 
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.isolation import privileges as priv_mod
-from agent_sandbox.isolation import setup
-from agent_sandbox.isolation import syscalls
+from agent_sandbox.isolation import setup, syscalls
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import InitFailureCode, InitStage
 from agent_sandbox.security import init as init_mod

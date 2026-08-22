@@ -48,14 +48,12 @@ from agent_sandbox.interface import SessionManager
 from agent_sandbox.isolation import lifecycle as lifecycle_mod
 from agent_sandbox.isolation import setup as setup_mod
 from agent_sandbox.models import (
-    ExecutionRefused,
     ExecutionRequest,
     ExecutionResult,
     InitResult,
     SecurityMode,
 )
 from agent_sandbox.runtime.session import RuntimeSession
-
 from tests.unit import elf_fixture
 from tests.unit.test_cli import (
     _fake_sandbox_run,
@@ -492,7 +490,7 @@ class DiffTests(_CliTestCase):
             import subprocess
             subprocess.run(["git", "--version"], check=True,
                            capture_output=True)
-        except Exception:  # noqa: BLE001 - host git unavailable
+        except Exception:
             self.skipTest("host git unavailable on this substrate")
         repo = tempfile.mkdtemp(prefix="as-gitrepo-")
         self.addCleanup(shutil.rmtree, repo, True)

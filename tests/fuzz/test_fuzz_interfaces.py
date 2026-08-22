@@ -42,7 +42,6 @@ import unittest
 from agent_sandbox import cli as cli_mod
 from agent_sandbox import registry
 from agent_sandbox.config import RuntimeConfig
-
 from tests.fuzz import _fuzzutil
 
 SEED = 0xC0FFEE

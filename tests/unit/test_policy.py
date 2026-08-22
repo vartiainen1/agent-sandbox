@@ -30,7 +30,6 @@ import json
 import os
 import pathlib
 import shutil
-import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -43,7 +42,6 @@ from agent_sandbox.models import ExecutionRefused, ExecutionRequest
 from agent_sandbox.policy import (
     ALL_CAPABILITIES,
     DEFAULT_CAPABILITIES,
-    POLICY_RESOURCE_KEYS,
     Policy,
     PolicyDecision,
     PolicyError,
@@ -371,6 +369,7 @@ class SessionPolicyGateTests(unittest.TestCase):
         # S-022/S-023: the policy decision is a structured, session-
         # correlated audit event (observational, never enforcement).
         import json as _json
+
         from agent_sandbox.audit.recorder import AuditRecorder
         tmp = tempfile.mkdtemp(prefix="as-policy-audit-")
         self.addCleanup(shutil.rmtree, tmp, True)

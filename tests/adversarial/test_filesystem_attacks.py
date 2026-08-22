@@ -18,20 +18,17 @@ Evidence classification:
 from __future__ import annotations
 
 import ast
-import inspect
 import json
 import os
 import pathlib
 import shutil
 import sys
 import tempfile
-import threading
-import time
 import unittest
 
 from agent_sandbox.config import RuntimeConfig
-from agent_sandbox.isolation import setup
 from agent_sandbox.isolation import rootfs as rootfs_mod
+from agent_sandbox.isolation import setup
 
 LINUX = sys.platform.startswith("linux") and hasattr(os, "fork")
 
@@ -542,9 +539,12 @@ class FilesystemAttackStructuralTests(unittest.TestCase):
 
     def test_all_test_classes_exist(self):
         from tests.adversarial.test_filesystem_attacks import (
-            PathTraversalTests, AbsolutePathEscapeTests,
-            SymlinkEscapeTests, HardLinkAttackTests,
-            TOCTOURaceTests, WorkspaceEscapeTests,
+            AbsolutePathEscapeTests,
+            HardLinkAttackTests,
+            PathTraversalTests,
+            SymlinkEscapeTests,
+            TOCTOURaceTests,
+            WorkspaceEscapeTests,
         )
         for cls in [PathTraversalTests, AbsolutePathEscapeTests,
                      SymlinkEscapeTests, HardLinkAttackTests,

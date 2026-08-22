@@ -306,8 +306,8 @@ class CredentialSandboxTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, rootfs_state.layout.dir, True)
 
         def fn(state, fs):
-            import socket as _s
             import json as _json
+            import socket as _s
             try:
                 s = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM)
                 s.close()
@@ -369,8 +369,8 @@ class CredentialSandboxTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, rootfs_state.layout.dir, True)
 
         def fn(state, fs):
-            import socket as _s
             import json as _json
+            import socket as _s
             status = ""
             with open("/proc/self/status") as f:
                 status = f.read()

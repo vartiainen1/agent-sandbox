@@ -91,8 +91,8 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
-from typing import Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from agent_sandbox import git as git_mod
 from agent_sandbox import registry
@@ -453,7 +453,7 @@ def _cmd_create(argv: list[str], base: str) -> int:
         # the empty state dir (best-effort hygiene).
         try:
             registry.remove_session(base, session_id)
-        except Exception:  # noqa: BLE001 - hygiene only
+        except Exception:
             pass
         payload = _init_refused_payload(session_id, config.mode.value,
                                         result)
@@ -462,7 +462,7 @@ def _cmd_create(argv: list[str], base: str) -> int:
                                f"({config.mode.value}): "
                                f"{payload['reason']}"))
 
-    created = datetime.now(timezone.utc).isoformat()
+    created = datetime.now(UTC).isoformat()
     try:
         registry.save_session(base, session_id, config, created)
     except registry.RegistryError as e:
@@ -715,8 +715,9 @@ def _cmd_destroy(argv: list[str], base: str) -> int:
         pid1 = last.get("sandbox_pid1")
         cg_path = last.get("cgroup_path")
         if isinstance(pid1, int) and pid1 >= 1:
-            from agent_sandbox.isolation import lifecycle as lifecycle_mod
             from types import SimpleNamespace
+
+            from agent_sandbox.isolation import lifecycle as lifecycle_mod
             cg = None
             if isinstance(cg_path, str) and cg_path:
                 cg = SimpleNamespace(path=cg_path)

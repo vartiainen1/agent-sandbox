@@ -260,8 +260,17 @@ def remove_session(base: str, session_id: str) -> None:
 
 # Re-export for the CLI's policy document handling (single import site).
 __all__ = [
-    "RegistryError", "SCHEMA", "config_from_manifest", "ensure_session_dir",
-    "is_valid_session_id", "load_manifest", "manifest_path",
-    "remove_session", "save_session", "session_audit_path", "session_dir",
-    "state_base_dir", "update_last_execution",
+    "SCHEMA",
+    "RegistryError",
+    "config_from_manifest",
+    "ensure_session_dir",
+    "is_valid_session_id",
+    "load_manifest",
+    "manifest_path",
+    "remove_session",
+    "save_session",
+    "session_audit_path",
+    "session_dir",
+    "state_base_dir",
+    "update_last_execution",
 ]

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 from agent_sandbox.isolation import syscalls
 from agent_sandbox.isolation.errors import NamespaceSetupError

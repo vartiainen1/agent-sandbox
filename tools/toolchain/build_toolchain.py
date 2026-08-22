@@ -247,7 +247,7 @@ def build(out_root: str) -> None:
     #    path is hardcoded and must resolve inside the sandbox rootfs).
     loader = os.path.realpath("/lib64/ld-linux-x86-64.so.2")
     if not os.path.isfile(loader):
-        raise BuildError(f"dynamic loader missing: /lib64/ld-linux-x86-64.so.2")
+        raise BuildError("dynamic loader missing: /lib64/ld-linux-x86-64.so.2")
     dst = os.path.join(out_root, "lib64/ld-linux-x86-64.so.2")
     if not os.path.lexists(dst):
         shutil.copy2(loader, dst)

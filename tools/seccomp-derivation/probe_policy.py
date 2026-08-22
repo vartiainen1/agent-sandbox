@@ -158,7 +158,7 @@ def in_filter_child(pipe_fd) -> int:
         os.write(pipe_fd, (f"IN_FILTER {'PASS' if allok else 'FAIL'}\n" +
                            "".join(f"  {n}: {'ok' if ok else 'FAIL'}\n" for n, ok in checks)).encode())
         return 0 if allok else 1
-    except Exception as e:  # noqa: BLE001 - report to parent
+    except Exception as e:
         os.write(pipe_fd, f"IN_FILTER ERROR: {e!r}\n".encode())
         return 2
 
@@ -168,7 +168,7 @@ def workload_child(pipe_fd, cmd) -> int:
     try:
         prog = build_filter(ALLOWED)
         load_filter(prog)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         os.write(pipe_fd, f"LOAD ERROR: {e!r}\n".encode())
         return 2
     os.write(pipe_fd, b"FILTER_LOADED\n")

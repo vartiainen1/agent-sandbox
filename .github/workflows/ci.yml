@@ -36,6 +36,21 @@ jobs:
       - name: Compile check (all Python)
         run: python -m compileall -q tools agent_sandbox
 
+      - name: Phase 18 - ruff lint (security + code quality rules)
+        run: pip install ruff && ruff check .
+
+      - name: Phase 18 - mypy type check (agent_sandbox)
+        run: pip install mypy && mypy agent_sandbox --ignore-missing-imports
+
+      - name: Phase 18 - bandit security scan (high-severity only, justified exclusions)
+        run: pip install bandit && bandit -r agent_sandbox --skip B101,B108,B606,B110,B603,B607 -ll
+
+      - name: Phase 18 - pip-audit dependency audit (zero runtime deps)
+        run: pip install pip-audit && pip-audit -r /dev/null --desc
+
+      - name: Phase 18 - detect-secrets scan (baseline checked)
+        run: pip install detect-secrets && detect-secrets audit --report --no-dev-tools
+
       - name: Phase E deterministic fuzz harness (host-side fail-safe evidence - seed 0xC0FFEE, bounded)
         run: python -m unittest discover -s tests/fuzz -t . -v
 

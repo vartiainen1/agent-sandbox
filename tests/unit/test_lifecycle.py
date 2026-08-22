@@ -41,7 +41,6 @@ import unittest.mock
 
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.isolation import lifecycle as lifecycle_mod
-
 from tests.unit import test_credentials as tc
 from tests.unit import test_resources as tr
 

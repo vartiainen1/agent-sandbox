@@ -20,8 +20,8 @@ import tempfile
 import unittest
 
 from agent_sandbox.config import RuntimeConfig
-from agent_sandbox.isolation import setup
 from agent_sandbox.isolation import rootfs as rootfs_mod
+from agent_sandbox.isolation import setup
 
 LINUX = sys.platform.startswith("linux") and hasattr(os, "fork")
 
@@ -381,8 +381,10 @@ class LifecycleAttackStructuralTests(unittest.TestCase):
 
     def test_all_test_classes_exist(self):
         from tests.adversarial.test_lifecycle_attacks import (
-            IncompleteCleanupTests, DestroyRaceTests,
-            PolicyTamperingTests, PromptInjectionTests,
+            DestroyRaceTests,
+            IncompleteCleanupTests,
+            PolicyTamperingTests,
+            PromptInjectionTests,
         )
         for cls in [IncompleteCleanupTests, DestroyRaceTests,
                      PolicyTamperingTests, PromptInjectionTests]:

@@ -44,8 +44,8 @@ and only CALLS it under Linux; non-Linux hosts fail closed at the guard.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import errno
+from dataclasses import dataclass
 
 from agent_sandbox.isolation import syscalls
 from agent_sandbox.isolation.errors import NamespaceSetupError

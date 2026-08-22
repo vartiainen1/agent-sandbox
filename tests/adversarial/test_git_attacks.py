@@ -349,7 +349,6 @@ class SandboxGitContainmentTests(unittest.TestCase):
         # pointing at a host-visible path: inside the sandbox these
         # resolve only within the disposable rootfs - the host is never
         # touched and the operation completes.
-        import json
         sid = self._session_id()
         self._probe_git(sid)
         # Only add the hostile links to the workspace AFTER the session
@@ -368,7 +367,6 @@ class SandboxGitContainmentTests(unittest.TestCase):
         # A hostile hook writes to a HOST-visible path from inside the
         # sandbox: the path is the host tempdir, unreachable from the
         # sandbox rootfs. The host marker must not appear.
-        import json
         sid = self._session_id()
         self._probe_git(sid)
         code, out, _ = self._git(sid, "status")

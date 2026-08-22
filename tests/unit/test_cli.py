@@ -69,7 +69,6 @@ from agent_sandbox.runtime import session as session_mod
 from agent_sandbox.runtime.session import RuntimeSession, SessionState
 from agent_sandbox.security import init as init_mod
 from agent_sandbox.security.init import SecurityInitializer
-
 from tests.unit import elf_fixture
 from tests.unit import test_credentials as tc
 from tests.unit import test_resources as tr

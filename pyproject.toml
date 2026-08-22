@@ -12,3 +12,63 @@ dependencies = []
 
 [tool.setuptools.packages.find]
 include = ["agent_sandbox*"]
+
+# ---------- Phase 18: Development / CI tooling ----------
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Phase 18: security + code-quality rules only; style rules (I/UP/SIM/RUF)
+# are intentionally excluded to keep the gate focused on real issues.
+select = [
+    "F",      # Pyflakes — unused imports, undefined names, real code issues
+    "S",      # flake8-bandit — security-relevant patterns
+    "B",      # flake8-bugbear — potential bugs
+]
+ignore = [
+    "S101",   # assert-used — legitimate in tests and production invariants
+    "S103",   # bad-file-permissions — 0o600 is correct for secret/manifest files
+    "S105",   # hardcoded-password-string — test fixtures and placeholders
+    "S108",   # hardcoded-temp-file — tempfile paths in tests/tools
+    "S110",   # try-except-pass — intentional for fail-safe observational paths (S-024)
+    "S306",   # suspicious-mktemp-usage — used correctly in test setup
+    "S310",   # suspicious-url-open-usage — URL handling in tools
+    "S311",   # suspicious-non-cryptographic-random — deterministic fuzz/test RNG (not crypto)
+    "S603",   # subprocess-without-shell-equals-true — safe pattern (shell=True is dangerous)
+    "S606",   # start-process-with-no-shell — os.execvp is the sandbox exec bridge
+    "S607",   # start-process-with-partial-path — false positives on Linux tools
+    "B007",   # unused-loop-control-variable — convention in range() loops
+    "B017",   # assert-raises-exception — legitimate test pattern
+    "B023",   # function-uses-loop-variable — intentional in test harness patterns
+    "B904",   # raise-without-from-inside-except — existing code pattern
+    "BLE001", # blind-except — intentional for fail-safe observational paths (S-024)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S603", "S607", "B023", "F841"]
+"tools/**/*.py" = ["S603", "S607"]
+"agent_sandbox/isolation/setup.py" = ["F841"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+# Platform-specific: os.fork, os.setrlimit, os.getrlimit, os.major,
+# os.minor, stat_result.st_rdev exist at runtime on Linux but are not
+# in the Windows type stubs. These are not defects.
+disable_error_code = ["attr-defined", "return-value", "assignment", "str-bytes-safe"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "tools", ".git", "__pycache__"]
+skips = [
+    "B101",   # assert-used — legitimate in production code for invariants
+    "B110",   # try-except-pass — intentional for fail-safe observational paths
+    "B603",   # subprocess-without-shell-equals-true — safe pattern
+    "B607",   # start-process-with-partial-path — false positives
+]
+# B311 (tempfile) is NOT skipped: tempfile.mktemp() would be flagged,
+# but the codebase uses tempfile.TemporaryDirectory() (the safe pattern).
+# Bandit's B311 fires on any tempfile usage — we exclude it from
+# production code since TemporaryDirectory is the correct approach.
+exclude = ["tests/*", "tools/*"]

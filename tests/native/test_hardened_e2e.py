@@ -23,7 +23,6 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
-from pathlib import Path
 
 # Skip entire module on non-Linux
 LINUX = sys.platform == "linux"
@@ -43,13 +42,14 @@ def _probe_hardened_feasible() -> tuple[bool, str]:
     if not LINUX:
         return False, "not Linux"
     try:
-        from agent_sandbox.isolation.cgroups import (
-            detect_cgroup_v2,
-            require_controllers,
-            probe_delegation,
-            _own_cgroup_path_impl,
-        )
         import os as _os
+
+        from agent_sandbox.isolation.cgroups import (
+            _own_cgroup_path_impl,
+            detect_cgroup_v2,
+            probe_delegation,
+            require_controllers,
+        )
         state = detect_cgroup_v2()
         require_controllers(state)
     except Exception as e:
@@ -116,8 +116,8 @@ def _run_hardened(command: tuple[str, ...], wall_time: int = 30,
                   mode: str = "hardened"):
     """Create a RuntimeSession, initialize, execute. Returns (session, result)."""
     from agent_sandbox.config import RuntimeConfig
-    from agent_sandbox.runtime.session import RuntimeSession
     from agent_sandbox.models import ExecutionRequest
+    from agent_sandbox.runtime.session import RuntimeSession
 
     cfg = RuntimeConfig.from_dict(_make_config(
         mode=mode, command=command, wall_time=wall_time))
@@ -176,8 +176,8 @@ class TestHardenedSubstrateProbe(unittest.TestCase):
     def test_subtree_control_state(self):
         """Record which controllers are enabled in subtree_control."""
         from agent_sandbox.isolation.cgroups import (
-            _own_cgroup_path_impl,
             REQUIRED_CONTROLLERS,
+            _own_cgroup_path_impl,
         )
         parent = os.path.join(
             "/sys/fs/cgroup",
@@ -256,10 +256,10 @@ class TestHardenedCgroupDirect(unittest.TestCase):
 
     def test_prepare_session_with_controllers(self):
         """prepare_session succeeds when controllers are in subtree_control."""
+        from agent_sandbox.config import ResourceLimits
         from agent_sandbox.isolation.cgroups import (
             CgroupSession,
         )
-        from agent_sandbox.config import ResourceLimits
 
         if not HARDENED_FEASIBLE:
             self.skipTest(
@@ -276,7 +276,6 @@ class TestHardenedCgroupDirect(unittest.TestCase):
 
     def test_limits_readable_after_prepare(self):
         """All four cgroup limits are readable after prepare_session."""
-        from agent_sandbox.isolation.cgroups import prepare_session
         from agent_sandbox.config import ResourceLimits
 
         if not HARDENED_FEASIBLE:
@@ -315,7 +314,6 @@ class TestHardenedInitReady(unittest.TestCase):
         """RuntimeSession with HARDENED mode reaches READY state."""
         from agent_sandbox.config import RuntimeConfig
         from agent_sandbox.runtime.session import RuntimeSession
-        from agent_sandbox.models import InitResult
 
         cfg = RuntimeConfig.from_dict(_make_config(mode="hardened"))
         session = RuntimeSession(cfg)
@@ -609,11 +607,7 @@ class TestHardenedStructural(unittest.TestCase):
 
     def test_imports(self):
         """All HARDENED-related modules import cleanly."""
-        from agent_sandbox.isolation import cgroups
-        from agent_sandbox.isolation import setup
-        from agent_sandbox.runtime import session
-        from agent_sandbox.config import RuntimeConfig, ResourceLimits
-        from agent_sandbox.models import SecurityMode
+        from agent_sandbox.isolation import cgroups, setup
         self.assertTrue(hasattr(cgroups, "prepare_session"))
         self.assertTrue(hasattr(cgroups, "join_and_verify"))
         self.assertTrue(hasattr(setup, "run_in_sandbox"))
@@ -640,12 +634,13 @@ class TestHardenedFailClosedNegative(unittest.TestCase):
         """Genuine absence of delegation -> HARDENED refuses AT RESOURCES
         with the precise cgroup reason (fail closed, never a partial
         success, never a relabeled PASS)."""
-        import tempfile
         import shutil
-        from tests.unit import require_delegation_unavailable
+        import tempfile
+
         from agent_sandbox.config import RuntimeConfig
+        from agent_sandbox.models import InitFailureCode, InitStage
         from agent_sandbox.security.init import SecurityInitializer
-        from agent_sandbox.models import InitStage, InitFailureCode
+        from tests.unit import require_delegation_unavailable
 
         require_delegation_unavailable(self)
         src = tempfile.mkdtemp(prefix="as-n1-native-")
@@ -667,13 +662,14 @@ class TestHardenedFailClosedNegative(unittest.TestCase):
         inside the real resources probe -> HARDENED refuses AT RESOURCES
         (fail closed; the failure is injected at the write seam the real
         failure would hit - the control itself is not disabled)."""
-        import tempfile
         import shutil
+        import tempfile
+
         from agent_sandbox.config import RuntimeConfig
         from agent_sandbox.isolation import cgroups as cgroups_mod
         from agent_sandbox.isolation.errors import NamespaceSetupError
+        from agent_sandbox.models import InitFailureCode, InitStage
         from agent_sandbox.security.init import SecurityInitializer
-        from agent_sandbox.models import InitStage, InitFailureCode
 
         src = tempfile.mkdtemp(prefix="as-n1-native-")
         self.addCleanup(shutil.rmtree, src, True)

@@ -47,10 +47,9 @@ import unittest.mock
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.isolation import credentials as cred_mod
 from agent_sandbox.isolation import environment as env_mod
+from agent_sandbox.models import ExecutionRequest, InitStage
 from agent_sandbox.security import init as init_mod
 from agent_sandbox.security.init import SecurityInitializer
-from agent_sandbox.models import ExecutionRequest, InitStage
-
 from tests.unit import test_credentials as tc
 from tests.unit import test_resources as tr
 
@@ -132,8 +131,8 @@ class WorkloadGateTests(unittest.TestCase):
         # With a probe failure injected, initialization REFUSES and the
         # session gate blocks execution.
         from agent_sandbox.isolation import setup as setup_mod
-        from agent_sandbox.runtime.session import RuntimeSession
         from agent_sandbox.models import ExecutionRefused, InitFailureCode
+        from agent_sandbox.runtime.session import RuntimeSession
 
         # Everything before EXECUTION passes; the EXECUTION guard fails.
         ok = unittest.mock.patch.object(

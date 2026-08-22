@@ -13,6 +13,7 @@ import ast
 import json
 import os
 import pathlib
+
 try:
     import resource
 except ImportError:
@@ -23,8 +24,8 @@ import tempfile
 import unittest
 
 from agent_sandbox.config import RuntimeConfig
-from agent_sandbox.isolation import setup
 from agent_sandbox.isolation import rootfs as rootfs_mod
+from agent_sandbox.isolation import setup
 
 LINUX = sys.platform.startswith("linux") and hasattr(os, "fork")
 
@@ -303,8 +304,9 @@ class InfoLeakageStructuralTests(unittest.TestCase):
 
     def test_all_test_classes_exist(self):
         from tests.adversarial.test_info_leakage import (
-            CoreDumpLeakTests, AuditEnvironmentLeakageTests,
+            AuditEnvironmentLeakageTests,
             AuditTamperingTests,
+            CoreDumpLeakTests,
         )
         for cls in [CoreDumpLeakTests, AuditEnvironmentLeakageTests,
                      AuditTamperingTests]:

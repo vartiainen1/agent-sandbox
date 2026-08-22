@@ -103,7 +103,7 @@ class RuntimeConfig:
 
     # -- construction -------------------------------------------------
     @classmethod
-    def from_dict(cls, data: dict) -> "RuntimeConfig":
+    def from_dict(cls, data: dict) -> RuntimeConfig:
         """Build + strictly validate from a dict. Rejects unknown fields,
         bad values, and unsupported modes with a deterministic
         ``ConfigError`` naming the offending field."""

@@ -55,7 +55,6 @@ from agent_sandbox.audit import (
     POLICY_DECISION,
     POLICY_LOADED,
     SESSION_CREATED,
-    AuditRecorder,
 )
 from agent_sandbox.models import (
     ExecutionRefused,
@@ -65,7 +64,6 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.runtime.session import RuntimeSession
 from agent_sandbox.security.init import SecurityInitializer
-
 from tests.unit import elf_fixture
 from tests.unit import test_cli as tcli
 from tests.unit import test_credentials as tc
@@ -512,6 +510,7 @@ class StructuralGuardTests(unittest.TestCase):
         # the MCP and API transports.
         import ast
         import inspect
+
         from agent_sandbox import interface as iface_mod
         for mod in (mcp_mod, iface_mod):
             tree = ast.parse(inspect.getsource(mod))

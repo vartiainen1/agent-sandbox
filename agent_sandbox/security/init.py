@@ -54,7 +54,6 @@ Rules enforced here:
 from __future__ import annotations
 
 import sys
-from typing import Optional
 
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.models import (
@@ -108,7 +107,7 @@ def _ensure_mechanism_guards() -> None:
     global _MECHANISM_GUARDS_ENSURED
     if _MECHANISM_GUARDS_ENSURED:
         return
-    # noqa: F401 - the import's side effect (guard registration) is the point.
+
     from agent_sandbox.isolation import setup as _setup  # noqa: F401
     _MECHANISM_GUARDS_ENSURED = True
 
@@ -186,7 +185,7 @@ class SecurityInitializer:
         for stage in init_sequence(config.mode):
             if stage is InitStage.READY:
                 return InitResult(ok=True, mode=config.mode, stage=stage)
-            guard: Optional[StageGuard] = _STAGE_GUARDS.get(stage)
+            guard: StageGuard | None = _STAGE_GUARDS.get(stage)
             if guard is None:
                 return InitResult(
                     ok=False, mode=config.mode, stage=stage,

@@ -38,12 +38,11 @@ import tempfile
 import unittest
 import unittest.mock
 
-from agent_sandbox.config import (
-    DEFAULT_ENV_ALLOWLIST, ConfigError, RuntimeConfig)
+from agent_sandbox.config import DEFAULT_ENV_ALLOWLIST, ConfigError, RuntimeConfig
 from agent_sandbox.isolation import environment as env_mod
 from agent_sandbox.isolation import setup
 from agent_sandbox.isolation.errors import NamespaceSetupError
-from agent_sandbox.models import InitFailureCode, InitStage, SecurityMode
+from agent_sandbox.models import InitFailureCode, InitStage
 from agent_sandbox.security import init as init_mod
 
 LINUX = sys.platform.startswith("linux") and hasattr(os, "fork")

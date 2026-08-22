@@ -187,14 +187,14 @@ class McpServer:
         except InterfaceParamError as e:
             response = _error(request_id, INVALID_PARAMS,
                               f"invalid params: {e}")
-        except Exception:  # noqa: BLE001 - never leak or crash
+        except Exception:
             response = _error(request_id, INTERNAL_ERROR,
                               _GENERIC_INTERNAL_ERROR)
         if is_notification:
             return None
         try:
             return json.dumps(response, sort_keys=True)
-        except Exception:  # noqa: BLE001 - serialization must never crash
+        except Exception:
             return json.dumps(_error(request_id, INTERNAL_ERROR,
                                      _GENERIC_INTERNAL_ERROR),
                               sort_keys=True)
@@ -221,7 +221,7 @@ class McpServer:
                 # The peer closed the pipe - terminate deterministically.
                 try:
                     stderr.write("agent-sandbox-mcp: output stream closed\n")
-                except OSError:  # noqa: BLE001 - nothing left to report
+                except OSError:
                     pass
                 return 0
         return 0

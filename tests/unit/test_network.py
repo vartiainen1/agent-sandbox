@@ -43,7 +43,6 @@ import socket
 import struct
 import sys
 import tempfile
-import types
 import unittest
 import unittest.mock
 

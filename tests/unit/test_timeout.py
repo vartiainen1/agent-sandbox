@@ -33,13 +33,11 @@ from __future__ import annotations
 
 import os
 import pathlib
-import time
 import unittest
 
 from agent_sandbox.config import RuntimeConfig
 from agent_sandbox.isolation import output as output_mod
 from agent_sandbox.isolation import timeout as timeout_mod
-
 from tests.unit import test_credentials as tc
 from tests.unit import test_resources as tr
 
@@ -275,8 +273,9 @@ class SandboxTimeoutIntegrationTests(unittest.TestCase):
         # external timer (verified by the expiry above). Here we pin the
         # ordering property: the deadline is enforced OUTSIDE the
         # boundary - the supervisor's own wait is what expires.
-        from agent_sandbox.isolation import setup
         import unittest.mock
+
+        from agent_sandbox.isolation import setup
         src = tr_tempdir()
         self.addCleanup(_rmtree, src)
         cfg = RuntimeConfig.from_dict(valid_config(src))

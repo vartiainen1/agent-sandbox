@@ -31,12 +31,8 @@ construction, routing, and fail-closed properties.
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
-import sys
-import tempfile
 import unittest
 import unittest.mock
 
@@ -45,12 +41,10 @@ from agent_sandbox import git as git_mod
 from agent_sandbox import registry
 from agent_sandbox.isolation import setup as setup_mod
 from agent_sandbox.models import (
-    ExecutionRefused,
     ExecutionResult,
     SecurityMode,
 )
 from agent_sandbox.runtime.session import RuntimeSession
-
 from tests.unit.test_cli import _fake_sandbox_run, _ready_session_context
 from tests.unit.test_cli_sessions import _CliTestCase, _run_cli
 

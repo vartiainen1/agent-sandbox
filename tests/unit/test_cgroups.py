@@ -31,7 +31,7 @@ from agent_sandbox.config import ConfigError, ResourceLimits, RuntimeConfig
 from agent_sandbox.isolation import cgroups as cg
 from agent_sandbox.isolation import setup
 from agent_sandbox.isolation.errors import NamespaceSetupError
-from agent_sandbox.models import InitFailureCode, InitStage
+from agent_sandbox.models import InitFailureCode
 from agent_sandbox.security import init as init_mod
 
 LINUX = sys.platform.startswith("linux") and hasattr(os, "fork")

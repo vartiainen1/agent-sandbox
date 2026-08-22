@@ -52,23 +52,20 @@ def check_userns_mapping() -> tuple[bool, str]:
     caller_uid, caller_gid = os.getuid(), os.getgid()
     r = libc.unshare(ctypes.c_int(CLONE_NEWUSER))
     if r != 0:
-        return False, "unshare(CLONE_NEWUSER) failed errno={} ({})".format(
-            ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+        return False, f"unshare(CLONE_NEWUSER) failed errno={ctypes.get_errno()} ({os.strerror(ctypes.get_errno())})"
     try:
         with open("/proc/self/setgroups", "w", encoding="ascii") as f:
             f.write("deny")
     except OSError as e:
-        return False, ("setgroups deny failed errno={} ({}) - the uid 0 -> "
-                       "caller mapping cannot be established unprivileged").format(
-            e.errno, e.strerror)
+        return False, (f"setgroups deny failed errno={e.errno} ({e.strerror}) - the uid 0 -> "
+                       "caller mapping cannot be established unprivileged")
     try:
         with open("/proc/self/uid_map", "w", encoding="ascii") as f:
             f.write(f"0 {caller_uid} 1\n")
         with open("/proc/self/gid_map", "w", encoding="ascii") as f:
             f.write(f"0 {caller_gid} 1\n")
     except OSError as e:
-        return False, "uid/gid map write failed errno={} ({})".format(
-            e.errno, e.strerror)
+        return False, f"uid/gid map write failed errno={e.errno} ({e.strerror})"
     # Read back and verify the applied mapping (never trust write success).
     try:
         with open("/proc/self/uid_map", encoding="ascii") as f:
@@ -76,17 +73,14 @@ def check_userns_mapping() -> tuple[bool, str]:
         with open("/proc/self/gid_map", encoding="ascii") as f:
             gm = f.read().strip().split()
     except OSError as e:
-        return False, "mapping read-back failed errno={} ({})".format(
-            e.errno, e.strerror)
+        return False, f"mapping read-back failed errno={e.errno} ({e.strerror})"
     uid_ok = len(um) == 3 and um[0] == "0" and int(um[1]) == caller_uid
     gid_ok = len(gm) == 3 and gm[0] == "0" and int(gm[1]) == caller_gid
     if not uid_ok or not gid_ok:
-        return False, ("mapping read-back mismatch: uid_map={} gid_map={} "
-                       "(expected 0 -> {} and 0 -> {})").format(
-            um, gm, caller_uid, caller_gid)
+        return False, (f"mapping read-back mismatch: uid_map={um} gid_map={gm} "
+                       f"(expected 0 -> {caller_uid} and 0 -> {caller_gid})")
     return True, ("full uid 0 -> caller mapping established and verified "
-                  "(unshare + setgroups deny + read-back) as uid {}").format(
-        os.geteuid())
+                  f"(unshare + setgroups deny + read-back) as uid {os.geteuid()}")
 
 
 def check_seccomp_nonroot() -> tuple[bool, str]:
@@ -102,12 +96,10 @@ def check_seccomp_nonroot() -> tuple[bool, str]:
     arr = (sock_filter * 1)(insn)
     prog = sock_fprog(1, ctypes.cast(arr, ctypes.POINTER(sock_filter)))
     if prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
-        return False, "no_new_privs failed errno={} ({})".format(
-            ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+        return False, f"no_new_privs failed errno={ctypes.get_errno()} ({os.strerror(ctypes.get_errno())})"
     if prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, ctypes.addressof(prog), 0, 0) != 0:
-        return False, "seccomp filter load failed errno={} ({})".format(
-            ctypes.get_errno(), os.strerror(ctypes.get_errno()))
-    return True, "seccomp filter installed as uid {} after no_new_privs".format(os.geteuid())
+        return False, f"seccomp filter load failed errno={ctypes.get_errno()} ({os.strerror(ctypes.get_errno())})"
+    return True, f"seccomp filter installed as uid {os.geteuid()} after no_new_privs"
 
 
 def main() -> int:

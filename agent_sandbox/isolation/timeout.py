@@ -25,9 +25,9 @@ from __future__ import annotations
 import os
 import select
 import time
-from typing import Callable
+from collections.abc import Callable
 
-from agent_sandbox.isolation.output import SIGKILL, MIB
+from agent_sandbox.isolation.output import SIGKILL
 
 _DEFAULT_CHUNK = 64 * 1024
 

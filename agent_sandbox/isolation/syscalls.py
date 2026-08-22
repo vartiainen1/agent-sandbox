@@ -20,7 +20,6 @@ same ctypes discipline):
 from __future__ import annotations
 
 import ctypes
-import errno
 import os
 import platform
 

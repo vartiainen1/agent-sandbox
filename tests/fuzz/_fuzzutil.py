@@ -8,7 +8,8 @@ Budgets are fixed by the callers (the tests), never unbounded.
 from __future__ import annotations
 
 import random
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 
 def mutate_bytes(rng: random.Random, data: bytes) -> bytes:

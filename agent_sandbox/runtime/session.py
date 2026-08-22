@@ -130,7 +130,7 @@ class RuntimeSession:
             return
         try:
             self._audit.record(self._session_id, event, **fields)
-        except Exception:  # noqa: BLE001 - observation only (S-024)
+        except Exception:
             pass
 
     # -- lifecycle ---------------------------------------------------------
@@ -168,7 +168,7 @@ class RuntimeSession:
         from agent_sandbox.execution import validate_request
         try:
             request = validate_request(request)
-        except Exception as e:  # noqa: BLE001 - deterministic request error
+        except Exception as e:
             self._record("execution_refused",
                          reason=str(e), state=self._state.value)
             return ExecutionRefused(reason=str(e), state=self._state.value)
@@ -218,10 +218,10 @@ class RuntimeSession:
 
         # 4. Host-side setup (rootfs copy; HARDENED cgroup session) then
         #    the single boundary call.
+        from agent_sandbox.execution import command_workload
         from agent_sandbox.isolation import cgroups as cgroups_mod
         from agent_sandbox.isolation import rootfs as rootfs_mod
         from agent_sandbox.isolation.errors import NamespaceSetupError
-        from agent_sandbox.execution import command_workload
 
         rootfs_state = None
         cgroup_session = None
@@ -253,7 +253,7 @@ class RuntimeSession:
             self._record("execution_refused", reason=reason,
                          state=self._state.value)
             return ExecutionRefused(reason=reason, state=self._state.value)
-        except Exception as e:  # noqa: BLE001 - never leak a crash upward
+        except Exception as e:
             reason = (f"execution mechanism failed: {type(e).__name__}: {e} "
                       "- fail closed, workload not executed")
             self._record("execution_refused", reason=reason,
@@ -263,7 +263,7 @@ class RuntimeSession:
             if cgroup_session is not None:
                 try:
                     cgroups_mod.remove_session(cgroup_session)
-                except Exception:  # noqa: BLE001 - best-effort cleanup
+                except Exception:
                     pass
             if rootfs_state is not None:
                 import shutil

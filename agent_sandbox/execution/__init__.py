@@ -32,7 +32,7 @@ Import safety: imports only stdlib pieces available on every platform;
 from __future__ import annotations
 
 import os
-from typing import Callable
+from collections.abc import Callable
 
 from agent_sandbox.models import ExecutionRequest
 
@@ -79,6 +79,5 @@ def command_workload(request: ExecutionRequest) -> Callable:
 
     def workload(state, fs):
         os.execvpe(command[0], list(command), os.environ)
-        return None  # unreachable: execvpe either replaces or raises
 
     return workload

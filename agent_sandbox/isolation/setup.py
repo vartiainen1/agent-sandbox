@@ -146,15 +146,19 @@ import shutil
 import sys
 from dataclasses import dataclass
 
-from agent_sandbox.config import DEFAULT_ENV_ALLOWLIST, ResourceLimits
+from agent_sandbox.config import ResourceLimits
 from agent_sandbox.isolation import cgroups as cgroups_mod
 from agent_sandbox.isolation import credentials as cred_mod
 from agent_sandbox.isolation import environment as env_mod
 from agent_sandbox.isolation import filesystem as fs_mod
 from agent_sandbox.isolation import lifecycle as lifecycle_mod
+from agent_sandbox.isolation import namespaces, rootfs, syscalls, userns
+from agent_sandbox.isolation import network as net_mod
 from agent_sandbox.isolation import output as output_mod
+from agent_sandbox.isolation import privileges as priv_mod
+from agent_sandbox.isolation import resources as resources_mod
+from agent_sandbox.isolation import seccomp as seccomp_mod
 from agent_sandbox.isolation import timeout as timeout_mod
-from agent_sandbox.isolation import namespaces, network as net_mod, privileges as priv_mod, resources as resources_mod, rootfs, seccomp as seccomp_mod, syscalls, userns
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import InitFailureCode, InitStage, SecurityMode, StageCheck
 
@@ -360,7 +364,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             state = enter_all_namespaces()
             if rootfs_state is not None:
                 fs_mod.prepare_rootfs(rootfs_state, disk_mb, toolchain)
-        except BaseException as e:  # noqa: BLE001 - report, don't propagate across fork
+        except BaseException as e:
             os.write(out_w, f"FAIL setup: {type(e).__name__}: {e}\n".encode())
             os._exit(1)
         _flush_io_before_fork()
@@ -427,7 +431,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                             "proc boundary pre-pivot verification failed: "
                             + "; ".join(problems))
                     os.write(mount_ack_w, b"1")
-                except BaseException as e:  # noqa: BLE001
+                except BaseException as e:
                     print(f"FAIL setup: {type(e).__name__}: {e}",
                           file=sys.stderr)
                     sys.stderr.flush()
@@ -506,7 +510,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 if fs_state is not None:
                     cred_mod.verify_credential_isolation(
                         require_socket_denial=True)
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 print(f"FAIL setup: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
                 os._exit(1)
@@ -519,7 +523,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                     print(result)
                 sys.stdout.flush()
                 os._exit(0)
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 print(f"FAIL workload: {type(e).__name__}: {e}", file=sys.stderr)
                 sys.stderr.flush()
                 os._exit(1)
@@ -533,7 +537,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 os._exit(1)
             try:
                 fs_mod.pivot_and_detach()
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 os.write(out_w,
                          f"FAIL setup: {type(e).__name__}: {e}\n".encode())
                 try:
@@ -587,11 +591,11 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                     "setup child died before reporting it) - fail closed, "
                     "workload not executed")
             cgroups_mod.join_and_verify(cgroup_session, sandbox_pid1)
-        except BaseException as e:  # noqa: BLE001 - fail closed
+        except BaseException as e:
             try:
                 lifecycle_mod.terminate_tree(join_kill_target,
                                              cgroup_session, grace=0.0)
-            except Exception:  # noqa: BLE001 - best-effort during refusal
+            except Exception:
                 pass
             try:
                 os.waitpid(pid, 0)
@@ -747,7 +751,7 @@ def _probe_impl() -> StageCheck:
         os.close(read_fd)
         try:
             state = enter_all_namespaces()
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
         _flush_io_before_fork()
@@ -758,7 +762,7 @@ def _probe_impl() -> StageCheck:
             try:
                 verdict = _pid1_verification(state)
                 os.write(write_fd, verdict.encode())
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
             os._exit(0)
         # Child A: wait for PID 1, then exit (closing its write_fd copy).
@@ -812,7 +816,7 @@ def _fs_pid1_verification(state: NamespaceState,
     problems: list[str] = []
     try:
         problems.extend(fs_mod.verify_sandbox_proc())
-    except BaseException as e:  # noqa: BLE001 - verification failure is a refusal
+    except BaseException as e:
         problems.append(f"proc view verification failed: {type(e).__name__}: {e}")
     cur = os.stat("/")
     if (cur.st_dev, cur.st_ino) != fs.root_identity:
@@ -877,7 +881,7 @@ def _filesystem_probe_impl(config) -> StageCheck:
             state = enter_all_namespaces()
             fs_mod.prepare_rootfs(rootfs_state, config.resources.disk_mb,
                                   _toolchain_dir())
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
         _flush_io_before_fork()
@@ -904,7 +908,7 @@ def _filesystem_probe_impl(config) -> StageCheck:
                         "proc boundary pre-pivot verification failed: "
                         + "; ".join(problems))
                 os.write(mount_ack_w, b"1")
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
                 try:
                     os.write(mount_ack_w, b"0")
@@ -923,7 +927,7 @@ def _filesystem_probe_impl(config) -> StageCheck:
                     rootfs_state, _toolchain_dir())
                 verdict = _fs_pid1_verification(state, fs_state)
                 os.write(write_fd, verdict.encode())
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
             os._exit(0)
         # Child A: wait for the pre-pivot proc mount, complete the pivot
@@ -933,7 +937,7 @@ def _filesystem_probe_impl(config) -> StageCheck:
             os._exit(1)
         try:
             fs_mod.pivot_and_detach()
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             try:
                 os.write(pivot_done_w, b"0")
@@ -1001,7 +1005,7 @@ def _network_probe_impl(config) -> StageCheck:
         try:
             state = enter_all_namespaces()
             net_mod.ensure_loopback_down()
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
         _flush_io_before_fork()
@@ -1013,7 +1017,7 @@ def _network_probe_impl(config) -> StageCheck:
                 net_mod.verify_deny_by_construction(
                     state.host_ns.get("net", ""))
                 os.write(write_fd, b"OK")
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
             os._exit(0)
         _, status = os.waitpid(grand, 0)
@@ -1067,7 +1071,7 @@ def _privileges_probe_impl(config) -> StageCheck:
         os.close(read_fd)
         try:
             state = enter_all_namespaces()
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
         _flush_io_before_fork()
@@ -1081,7 +1085,7 @@ def _privileges_probe_impl(config) -> StageCheck:
                 priv_mod.establish_and_verify()
                 priv_mod.reduce_and_verify()
                 os.write(write_fd, b"OK")
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
             os._exit(0)
         _, status = os.waitpid(grand, 0)
@@ -1140,7 +1144,7 @@ def _seccomp_probe_impl(config) -> StageCheck:
         try:
             program = seccomp_mod.build_program()
             state = enter_all_namespaces()
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
         _flush_io_before_fork()
@@ -1154,7 +1158,7 @@ def _seccomp_probe_impl(config) -> StageCheck:
                 priv_mod.reduce_and_verify()
                 seccomp_mod.establish_and_verify(program)
                 os.write(write_fd, b"OK")
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
             os._exit(0)
         _, status = os.waitpid(grand, 0)
@@ -1234,7 +1238,7 @@ def _resources_probe_impl(config) -> StageCheck:
                     cgroups_mod.CGROUP_ROOT, f"sbx-{os.getpid()}",
                     config.resources, config.workspace)
             state = enter_all_namespaces()
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             os.write(write_fd, f"FAIL setup: {type(e).__name__}: {e}".encode())
             os._exit(1)
         _flush_io_before_fork()
@@ -1252,7 +1256,7 @@ def _resources_probe_impl(config) -> StageCheck:
                 if session is not None:
                     cgroups_mod.join_and_verify(session, os.getpid())
                 os.write(write_fd, b"OK")
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
             os._exit(0)
         _, status = os.waitpid(grand, 0)
@@ -1339,7 +1343,7 @@ def _environment_probe_impl(config) -> StageCheck:
             # socket/credential variable (S-003/S-004).
             cred_mod.verify_isolated_env(dict(os.environ))
             os.write(write_fd, b"OK")
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             os.write(write_fd, f"FAIL {type(e).__name__}: {e}".encode())
         os._exit(0)
     os.close(write_fd)
@@ -1427,7 +1431,7 @@ def _execution_probe_impl(config) -> StageCheck:
             problems.append(
                 "bounded output: flooder completed normally - session "
                 "not terminated")
-    except BaseException as e:  # noqa: BLE001 - a probe failure is a refusal
+    except BaseException as e:
         problems.append(f"bounded output: {type(e).__name__}: {e}")
     # 3. External deadline (S-036): a silent child must be terminated on
     #    expiry - the deadline aborts the session, never a status flag.
@@ -1453,7 +1457,7 @@ def _execution_probe_impl(config) -> StageCheck:
             problems.append(
                 "external deadline: silent child completed normally - "
                 "session not terminated")
-    except BaseException as e:  # noqa: BLE001 - a probe failure is a refusal
+    except BaseException as e:
         problems.append(f"external deadline: {type(e).__name__}: {e}")
     if problems:
         return StageCheck(

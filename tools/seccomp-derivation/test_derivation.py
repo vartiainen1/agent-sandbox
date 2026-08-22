@@ -79,6 +79,7 @@ check("committed trace: no syscall outside allowlist", not missing and not probl
 
 # expansion detection: inject a fake observed syscall
 import copy
+
 bad_trace = copy.deepcopy(json.loads((HERE / "trace-results.json").read_text(encoding="utf-8")))
 bad_trace["summary"]["union"]["totally_new_syscall"] = 1
 tmp = pathlib.Path(str(HERE / "trace-results.json") + ".expansion-probe")
@@ -105,6 +106,7 @@ check("probe ALLOWED matches artifact", set(probe.ALLOWED) == set(allow))
 # makes CPython 3.12's argparse lazily import shutil, which then imports
 # _winapi on Linux (logged in freebuff-errors.txt, 2026-08-19).
 import unittest.mock
+
 old_argv = sys.argv
 sys.argv = ["trace_workloads.py"]
 with unittest.mock.patch.object(trace_workloads, "_platform_is_windows", return_value=True):

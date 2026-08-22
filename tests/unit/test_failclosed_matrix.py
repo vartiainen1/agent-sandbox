@@ -54,6 +54,7 @@ import tempfile
 import unittest
 import unittest.mock
 
+from agent_sandbox import cli as cli_mod
 from agent_sandbox import config as config_mod
 from agent_sandbox import registry
 from agent_sandbox.audit.recorder import AuditRecorder
@@ -70,14 +71,12 @@ from agent_sandbox.isolation import rootfs as rootfs_mod
 from agent_sandbox.isolation import seccomp as seccomp_mod
 from agent_sandbox.isolation import setup as setup_mod
 from agent_sandbox.isolation import userns
-from agent_sandbox import cli as cli_mod
 from agent_sandbox.isolation.errors import NamespaceSetupError
 from agent_sandbox.models import (
     ExecutionRefused,
     ExecutionRequest,
     ExecutionResult,
     InitFailureCode,
-    InitResult,
     InitStage,
     SecurityMode,
     StageCheck,
@@ -86,7 +85,6 @@ from agent_sandbox.runtime import session as session_mod
 from agent_sandbox.runtime.session import RuntimeSession, SessionState
 from agent_sandbox.security import init as init_mod
 from agent_sandbox.security.init import SecurityInitializer
-
 from tests.unit.test_cli import _ready_session_context
 from tests.unit.test_cli_sessions import _CliTestCase, _run_cli
 

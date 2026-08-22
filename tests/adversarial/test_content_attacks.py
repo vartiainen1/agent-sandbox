@@ -35,9 +35,8 @@ import tempfile
 import unittest
 
 from agent_sandbox.config import RuntimeConfig
-from agent_sandbox.isolation import setup
 from agent_sandbox.isolation import rootfs as rootfs_mod
-from agent_sandbox.models import ExecutionRequest
+from agent_sandbox.isolation import setup
 
 LINUX = sys.platform.startswith("linux") and hasattr(os, "fork")
 
@@ -774,6 +773,7 @@ class ContentAttackStructuralTests(unittest.TestCase):
         """The adversarial tests must not import or modify production
         enforcement code."""
         import ast
+
         import tests.adversarial.test_content_attacks as mod
         with open(mod.__file__) as f:
             tree = ast.parse(f.read())
@@ -796,9 +796,9 @@ class ContentAttackStructuralTests(unittest.TestCase):
     def test_all_test_classes_exist(self):
         """All three required test classes must exist."""
         from tests.adversarial.test_content_attacks import (
-            HookAttackTests,
-            DependencyAttackTests,
             BuildScriptAttackTests,
+            DependencyAttackTests,
+            HookAttackTests,
         )
         self.assertTrue(issubclass(HookAttackTests, unittest.TestCase))
         self.assertTrue(issubclass(DependencyAttackTests,
