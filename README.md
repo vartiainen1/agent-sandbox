@@ -19,7 +19,7 @@ audited.
 | Seccomp syscall allowlist derivation (Phase 1 pre-task) | **COMPLETE, container-validated** — 45-syscall HARDENED allowlist, behaviorally verified |
 | Runtime implementation (Phase 1) | **COMPLETE (Steps 1–16)** — minimal skeleton + Linux namespace isolation (Step 2) + minimal root filesystem with `pivot_root`, workspace copy isolation, and private mount propagation (Step 3) + `/proc` isolation (`hidepid=2`), minimal `/dev` (six identity-verified bind-mounted nodes, ADR-015), `/sys` absence (Step 4) + network namespace deny-by-construction (only `lo` DOWN, no addresses/routes, no usable path — Step 5) + no_new_privs (Step 6) + full capability reduction (Step 7) + seccomp filter installation (Step 8) + rlimits (Step 9) + cgroup v2 enforcement module (Step 10) + environment sanitization (Step 11, the approved six-variable sandbox environment — host env never inherited, S-034) + credential/socket isolation (Step 12 — host credential/control-socket paths absent, socket env vars never survive, socket creation denied by the filter, S-003/S-004) + bounded stdout/stderr (Step 13 — S-037 bounded supervisor pipe, terminate + truncation notice, workload cannot bypass) + external timeout enforcement (Step 14 — S-036 supervisor wall-clock deadline, session termination, workload cannot disable/evade/reset) + process-tree containment and cleanup (Step 15 — S-014 child subreaper + namespace-init kill + cgroup.kill where delegated + mandatory S-038 absence verification, survivors never reported as success) + minimal successful workload demonstration (Step 16 — item 22: a workload executes end-to-end through the complete boundary, returning deterministic output and observing the invariants from inside) implemented and tested; the full mandated Phase 1 order (items 1–22) is complete |
 | Interfaces (CLI/MCP/API) | **COMPLETE** — three thin front-ends (ADR-013) over the SOLE execution path `RuntimeSession.execute(ExecutionRequest) -> run_in_sandbox()`, sharing one session core (`agent_sandbox/interface` — the same initialize/execute code for MCP and API); CLI (`python -m agent_sandbox`): argv-only (`--` separator), `--json` exposes mode + session identity, deterministic exit codes; MCP (`python -m agent_sandbox.mcp`): stdio JSON-RPC 2.0, minimum surface (`initialize` + `execute`), id preservation, deterministic -32700/-32600/-32601/-32602/-32603 errors, no host details leak; API (`python -m agent_sandbox.api`): stdlib-only HTTP (zero dependencies), `POST /initialize` + `POST /execute`, loopback-only default bind, deterministic 400/404/405/413/500 errors (internal failures are a fixed generic message); three-way CLI/MCP/API decision equivalence tested (same ExecutionRequest, same payload fields, mode + session identity); the execve bridge runs commands INSIDE the sandbox (workspace-provided binaries; the minimal rootfs has no system binaries — unavailable commands fail deterministically, never on the host); minimal host-side JSONL audit recorder (ADR-012, observational, open-per-record so no audit fd crosses the fork boundary) |
-| Phase 2 — adversarial validation | **ACCEPTED AND FROZEN** — P1 (T-047/48/49, commit 5408ce3) + P2 (18 HOST-SIDE-only threats, commit dc1590a): 58/58 in-sandbox adversarial tests PASS through the real `RuntimeSession.execute() -> run_in_sandbox()` boundary; evidence reconciled in `THREAT_MODEL.md` §7/§10 (21 threats NATIVE VERIFIED, 24 DOCKER VERIFIED, 7 HOST-SIDE, 2 DESIGN INTENT); seccomp regression gate repaired and PASS (allowlist exactly 45, tier0=27/tier1=18); full suite green (Windows 547 run / 0 failures; Docker 547 run / 1 documented non-root environment failure); no enforcement boundary weakened; P3 HARDENED end-to-end and P4 aarch64 runtime enforcement remain **SUBSTRATE-LIMITED / NOT VERIFIED** (native Linux with cgroup delegation and native aarch64 required respectively) |
+| Phase 2 — adversarial validation | **ACCEPTED AND FROZEN** — P1 (T-047/48/49, commit 5408ce3) + P2 (18 HOST-SIDE-only threats, commit dc1590a) + exec-bridge regression: 59/59 in-sandbox adversarial tests PASS through the real `RuntimeSession.execute() -> run_in_sandbox()` boundary; evidence reconciled in `THREAT_MODEL.md` §7/§10 (22 threats NATIVE VERIFIED, 24 DOCKER VERIFIED, 7 HOST-SIDE, 2 DESIGN INTENT); seccomp regression gate repaired and PASS (allowlist exactly 45, tier0=27/tier1=18); full suite green (Windows 547 run / 0 failures; Docker 547 run / 1 documented non-root environment failure); no enforcement boundary weakened; **P3 HARDENED end-to-end VERIFIED (NATIVE)** (commit 7c1c30e — Ubuntu 24.04 / kernel 6.8 / x86_64 native QEMU VM, caller-owned delegated cgroup subtree, 24/24 PASS, 0 skips/errors); **P4 aarch64 runtime enforcement remains SUBSTRATE-LIMITED / NOT VERIFIED** (native aarch64 required) |
 
 This repository contains the security design, the reproducible seccomp
 derivation tooling, and the complete Phase 1 runtime (Steps 1-16: skeleton,
@@ -32,9 +32,17 @@ demonstration) plus the thin CLI/MCP front-ends. On a capable substrate
 (Docker uid 1001) the isolated modes initialize to READY and a
 workspace-provided command executes end-to-end through the boundary via
 `python -m agent_sandbox` (CLI) or `python -m agent_sandbox.mcp` (stdio
-JSON-RPC). HARDENED still refuses AT `resources` with the precise
-detected reason on hosts without cgroup v2 delegation (ADR-007), so
-nothing should be used to sandbox a workload on such a host.
+JSON-RPC). HARDENED is **end-to-end verified on native Linux** with a
+caller-owned/delegated cgroup v2 subtree (commit 7c1c30e — Ubuntu 24.04 /
+kernel 6.8 / x86_64 native QEMU VM, 24/24 PASS), and still refuses AT
+`resources` with the precise detected reason on hosts without cgroup v2
+delegation (ADR-007), so nothing should be used to sandbox a workload on
+such a host. The HARDENED substrate requirement is: caller-owned/delegated
+cgroup subtree with cpu/io/memory/pids controllers available and enabled,
+required resource controls established and read back, and a resolvable
+real backing device where io.max enforcement is required; if these cannot
+be established HARDENED execution refuses to start (no compatibility
+fallback).
 Native Linux validation runs in CI and is authoritative over the
 Docker-based results (see `docs/seccomp-derivation/verification.md` for
 the exact labeling).
@@ -93,7 +101,9 @@ verifies both halves: legitimate workloads pass, and
   validated (Step 4), and the network deny-by-construction boundary
   (only `lo` DOWN, no addresses/routes, no usable path) is validated
   (Step 5) — all container-validated (uid 1001); native rootless mapping
-  remains blocked by the runner's AppArmor restriction. Device nodes are
+  remains blocked by the GitHub runner's AppArmor restriction, while the
+  native Ubuntu 24.04 VM (commit 7c1c30e) verifies the complete HARDENED
+  path including cgroup enforcement. Device nodes are
   six identity-verified host bind-mounts (ADR-015); `no_new_privs` is
   established in sandbox PID 1 and its kernel state read back and
   verified (Step 6, S-010); the FULL capability bounding-set drop +
@@ -115,8 +125,10 @@ verifies both halves: legitimate workloads pass, and
   unresolvable device is a refusal, never a skip); HARDENED refuses AT
   `resources` with the precise detected reason when delegation is
   unavailable (Docker rootless: cgroupfs read-only; WSL2 privileged:
-  memory/io controllers unavailable), so cgroup enforcement remains
-  NOT VERIFIED on every current substrate; environment sanitization
+  memory/io controllers unavailable) — cgroup enforcement is VERIFIED
+  (NATIVE) on the documented Ubuntu 24.04 / kernel 6.8 substrate with a
+  caller-owned delegated subtree (commit 7c1c30e, all four controllers
+  enforced); environment sanitization
   (Step 11), credential/socket isolation (Step 12), bounded output
   (Step 13), external timeout (Step 14) and process-tree containment +
   cleanup verification  (Step 15) complete the mechanism chain - the
@@ -132,6 +144,7 @@ verifies both halves: legitimate workloads pass, and
 | Substrate | Status | Purpose |
 |---|---|---|
 | Native Linux (GitHub Actions ubuntu) | **Authoritative** — CI runs trace + regression gate + behavioral probe + rootless capability detection + namespace tests + filesystem-boundary tests + proc/dev/sys boundary tests + network deny-by-construction tests + no_new_privs/capability-reduction/seccomp tests + rlimits tests + cgroup v2 tests | Security claims |
+| Native Linux VM (Ubuntu 24.04 / kernel 6.8 / x86_64, caller-owned delegated cgroup) | **Authoritative for HARDENED** — P3 HARDENED end-to-end: 24/24 PASS (init READY, workload executes, seccomp + socket deny, zero caps, no_new_privs, namespace/env isolation, timeout/cleanup, audit; commit 7c1c30e) | HARDENED end-to-end verification; never relabeled to other substrates |
 | Docker Desktop (container) | Development / reproducible observation; **only substrate where the full rootless mapping + rootfs/pivot_root + proc/dev/sys + network boundary is currently exercised** (uid 1001) | Iteration on Windows; never labeled as native |
 
 **Known native limitation (documented, not hidden)**: the GitHub-hosted
@@ -140,8 +153,10 @@ AppArmor userns restriction denies the `setgroups`-deny write (EACCES), so
 the uid 0→caller mapping cannot be established there. The namespace and
 filesystem-boundary real-path tests therefore skip on native CI with the
 recorded reason (never a false PASS); the fail-closed refusal is verified
-natively; and the boundary execution evidence is VERIFIED DOCKER until a
-native host that can provide the mechanism exists (see
+natively; and the boundary execution evidence is VERIFIED DOCKER — except
+on the native Ubuntu 24.04 / kernel 6.8 VM (commit 7c1c30e), where the
+complete HARDENED path, including the rootless mapping and cgroup
+enforcement, is verified end-to-end (see
 `docs/seccomp-derivation/verification.md`).
 
 ## Companion tools

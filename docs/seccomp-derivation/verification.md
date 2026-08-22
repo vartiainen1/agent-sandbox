@@ -1084,10 +1084,13 @@ variables at workload time. 9 tests: host-side contract + wiring gates
 - **NATIVE VERIFIED**: host-side contract + wiring gates; the real
   sandbox path remains NOT VERIFIED NATIVE (recorded AppArmor/setgroups
   substrate reason).
-- **KNOWN LIMITATION**: HARDENED-mode end-to-end remains NOT VERIFIED on
-  every current substrate — cgroup v2 delegation is unavailable, so
-  HARDENED correctly refuses AT RESOURCES (Step 10 open item, unchanged);
-  CLI/MCP integration is a separate later phase.
+- **KNOWN LIMITATION**: HARDENED-mode end-to-end was NOT VERIFIED on the
+  substrates available at the time of this Step 16 record (2026-08-19) —
+  cgroup v2 delegation was unavailable there, so HARDENED correctly
+  refused AT RESOURCES (Step 10 open item, unchanged at that date).
+  HARDENED-mode end-to-end is now VERIFIED (NATIVE) on the documented
+  Ubuntu 24.04 / kernel 6.8 / x86_64 substrate (see the Phase 2 P3
+  section below); aarch64 runtime enforcement remains NOT VERIFIED.
 
 ## Interface phase sub-phase A — CLI + execution bridge + minimal audit (2026-08-19)
 
@@ -1259,5 +1262,71 @@ fail-closed paths on 3.11/3.12; the real sandbox-internal API path
 remains NOT VERIFIED NATIVE (recorded AppArmor/setgroups substrate
 reason, unchanged).
 
-KNOWN LIMITATION (unchanged): HARDENED end-to-end and native rootless
-sandbox-internal execution remain NOT VERIFIED on current substrates.
+KNOWN LIMITATION (unchanged at that date): HARDENED end-to-end and native
+rootless sandbox-internal execution were NOT VERIFIED on the substrates
+available at the time of this record (2026-08-19); superseded for
+HARDENED by the Phase 2 P3 section below.
+
+## Phase 2 P3 — HARDENED end-to-end verification (2026-08-21, commit 7c1c30e)
+
+### Result
+
+**HARDENED END-TO-END VERIFIED (NATIVE)** on the documented substrate
+below. This supersedes the earlier "HARDENED end-to-end NOT VERIFIED on
+every current substrate" statements in the historical Step/interfacing
+records above (those records remain as written — they accurately
+described the state at their date).
+
+### Environment (exact)
+
+| Item | Value |
+|---|---|
+| OS | Ubuntu 24.04 (native QEMU VM) |
+| Kernel | Linux 6.8, x86_64 |
+| Caller privilege | root on the VM; caller-owned cgroup subtree (the test process is in `0::/` — the root cgroup owns the whole tree) |
+| cgroup v2 | `/sys/fs/cgroup` cgroup2; controllers available: cpu, cpuset, hugetlb, io, memory, misc, pids, rdma |
+| subtree_control after setup | `cpu io memory pids` (all four required controllers enabled) |
+| Delegation probe | child cgroup create+remove succeeds (`probe_delegation() -> None`) |
+| io.max backing | real block device resolved from kernel state (`253:1` in the recorded run) |
+| Toolchain | `/opt/agent-sandbox-toolchain` (contains `/usr/bin/python3`) |
+| Feasibility | `_probe_hardened_feasible() == (True, 'all HARDENED prerequisites met')` |
+
+### Test results — `tests/native/test_hardened_e2e.py`
+
+**RUN=24 FAIL=0 ERROR=0 SKIP=0** — all 24 tests, zero security-test
+skips, zero errors. Coverage: init reaches READY; minimal workload
+executes; deterministic output; cgroup membership correct at workload
+time; seccomp active in the workload; `socket()` denied (EPERM);
+capabilities zero (CapBnd/CapEff/CapPrm = 0); no_new_privs=1;
+PID + network namespace isolation; exactly the six approved env vars;
+timeout enforcement; clean cleanup (no survivors, `cleanup_failure == ""`);
+audit session identity + mode correct; cgroup limits readable after
+prepare; session cgroup creation/removal; io device resolvable; substrate
+probe tests.
+
+### Related evidence
+
+- Adversarial suite: **59/59 PASS** (standalone and re-run after the e2e
+  suite — no cross-run pollution).
+- Root regression on the same substrate: 489 run, 1 documented
+  root-caller-premise failure (`test_host_caller_remains_unprivileged` —
+  asserts a non-root caller; fails only because this run is root, an
+  environment-premise result, not a sandbox boundary failure), 10
+  documented skips (delegation-premise tests correctly skipping on the
+  delegation-capable substrate).
+- x86_64 seccomp gate: exactly 45 syscalls (tier0=27, tier1=18), no
+  expansion.
+
+### Scope of the claim
+
+- VERIFIED for the documented Ubuntu 24.04 / kernel 6.8 / x86_64 native
+  substrate with caller-owned delegated cgroup support only.
+- NOT generalized to: all Linux systems, all kernels, rootless/
+  delegated-systemd environments generally, aarch64, CI runners, or proof
+  of the entire SECURITY_SPEC.md.
+- HARDENED correctly REFUSES execution when mandatory cgroup
+  delegation/resources cannot be established (fail closed — verified on
+  substrates without delegation, including the earlier Docker Desktop /
+  WSL2 run, commit e3b9873, preserved as historical evidence).
+- aarch64 runtime filter installation/enforcement remains NOT VERIFIED
+  (native aarch64 substrate required).

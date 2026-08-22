@@ -4,10 +4,16 @@ These tests verify the complete HARDENED security path through the
 production RuntimeSession.initialize() -> RuntimeSession.execute() ->
 run_in_sandbox() chain.
 
-Substrate: Docker Desktop + python:3.12-slim + --privileged (native Linux)
-with delegated cgroup v2 controllers.
+Verified substrate (approved result, commit 7c1c30e): native Ubuntu 24.04 /
+Linux 6.8 / x86_64 QEMU VM, caller-owned delegated cgroup v2 subtree with
+cpu/io/memory/pids controllers enabled, real block-device-backed io.max
+workspace, toolchain at /opt/agent-sandbox-toolchain. Result: 24/24 PASS,
+0 fail, 0 error, 0 skip.
 
-Evidence: NATIVE VERIFIED (real sandbox boundary on native Linux substrate)
+Evidence: NATIVE VERIFIED (real sandbox boundary on the documented native
+Linux substrate only — not generalized to other kernels/distros, aarch64,
+CI runners, or the entire SECURITY_SPEC.md). On substrates without the
+required cgroup delegation HARDENED refuses at RESOURCES (fail closed).
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 # Skip entire module on non-Linux
@@ -188,10 +195,10 @@ class TestHardenedSubstrateProbe(unittest.TestCase):
                 f"Substrate limitation: controllers {', '.join(missing)} "
                 f"not enabled in subtree_control ({subtree_path}). "
                 f"Available: {sorted(enabled)}. "
-                f"HARDENED requires all four controllers in subtree_control. "
-                f"This is a Docker container delegation limitation - "
-                f"a properly configured native Linux host with "
-                f"systemd Delegate=yes would have them."
+                f"HARDENED requires all four controllers in subtree_control "
+                f"on a delegation-capable native Linux host "
+                f"(systemd Delegate=yes or equivalent); on substrates "
+                f"without it HARDENED correctly refuses at RESOURCES."
             )
         self.assertEqual(len(enabled & set(REQUIRED_CONTROLLERS)), 4,
                          f"Expected 4 enabled, got {len(enabled & set(REQUIRED_CONTROLLERS))}: {enabled}")
@@ -208,7 +215,8 @@ class TestHardenedSubstrateProbe(unittest.TestCase):
                     f"Substrate limitation: io.max device resolution "
                     f"failed: {e}. The workspace is on overlay/tmpfs "
                     f"(no real block device). HARDENED requires a "
-                    f"resolvable backing block device for io.max."
+                    f"resolvable real backing block device for io.max on "
+                    f"a delegation-capable native Linux host."
                 )
 
     def test_hardened_feasibility_summary(self):
@@ -615,6 +623,76 @@ class TestHardenedStructural(unittest.TestCase):
         from agent_sandbox.isolation.cgroups import CgroupSession
         s = CgroupSession(path="/fake/path", limits=None, io_device=(0, 0))
         self.assertEqual(s.path, "/fake/path")
+
+
+@unittest.skipUnless(LINUX, SKIP_REASON)
+class TestHardenedFailClosedNegative(unittest.TestCase):
+    """N1: the genuine negative-boundary cgroup rows on the native
+    substrate (SECURITY_SPEC section 6 / S-018).
+
+    These exercise the REAL resources probe (the forked child runs the
+    actual establishment path); the failure is injected at the seam the
+    real failure would hit (a cgroup limit write raising), never by
+    disabling a control. A substrate without delegation must produce the
+    genuine fail-closed refusal - never a relabeled PASS."""
+
+    def test_hardened_refuses_at_resources_without_delegation(self):
+        """Genuine absence of delegation -> HARDENED refuses AT RESOURCES
+        with the precise cgroup reason (fail closed, never a partial
+        success, never a relabeled PASS)."""
+        import tempfile
+        import shutil
+        from tests.unit import require_delegation_unavailable
+        from agent_sandbox.config import RuntimeConfig
+        from agent_sandbox.security.init import SecurityInitializer
+        from agent_sandbox.models import InitStage, InitFailureCode
+
+        require_delegation_unavailable(self)
+        src = tempfile.mkdtemp(prefix="as-n1-native-")
+        self.addCleanup(shutil.rmtree, src, True)
+        cfg = RuntimeConfig.from_dict(_make_config(mode="hardened",
+                                                   workspace=src))
+        result = SecurityInitializer(cfg).initialize()
+        self.assertFalse(result.ok,
+                         "HARDENED must refuse without delegation")
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
+        self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
+        self.assertIn("cgroup", result.failure.reason)
+        self.assertIn("fail closed", result.failure.reason)
+
+    @unittest.skipUnless(HARDENED_FEASIBLE,
+                         f"HARDENED not feasible: {HARDENED_FEASIBLE_REASON}")
+    def test_hardened_refuses_on_cgroup_limit_write_failure(self):
+        """Delegation IS available but a genuine limit-write failure occurs
+        inside the real resources probe -> HARDENED refuses AT RESOURCES
+        (fail closed; the failure is injected at the write seam the real
+        failure would hit - the control itself is not disabled)."""
+        import tempfile
+        import shutil
+        from agent_sandbox.config import RuntimeConfig
+        from agent_sandbox.isolation import cgroups as cgroups_mod
+        from agent_sandbox.isolation.errors import NamespaceSetupError
+        from agent_sandbox.security.init import SecurityInitializer
+        from agent_sandbox.models import InitStage, InitFailureCode
+
+        src = tempfile.mkdtemp(prefix="as-n1-native-")
+        self.addCleanup(shutil.rmtree, src, True)
+        cfg = RuntimeConfig.from_dict(_make_config(mode="hardened",
+                                                   workspace=src))
+
+        def boom(*_args, **_kwargs):
+            raise NamespaceSetupError(
+                "cgroup limit write failed (N1 injection)")
+
+        with unittest.mock.patch.object(cgroups_mod, "_write_limits",
+                                        side_effect=boom):
+            result = SecurityInitializer(cfg).initialize()
+        self.assertFalse(result.ok,
+                         "HARDENED must refuse when a limit write fails")
+        self.assertEqual(result.failure.stage, InitStage.RESOURCES)
+        self.assertEqual(result.failure.code, InitFailureCode.STAGE_FAILED)
+        self.assertIn("cgroup", result.failure.reason)
+        self.assertIn("limit write failed", result.failure.reason)
 
 
 if __name__ == "__main__":

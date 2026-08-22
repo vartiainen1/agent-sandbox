@@ -209,8 +209,10 @@ Every attack category in the implementation plan Phase 2 list maps to
 threats above; each mandatory invariant (S-001…S-040) maps to at least one
 meaningful adversarial test that attacks the **actual runtime** (no mocks
 for the boundary). Phase 2 P1 (commit 5408ce3) and P2 (commit dc1590a)
-implemented the in-sandbox adversarial suite — 58 tests, all exercising the
-real `RuntimeSession.execute()` → `run_in_sandbox()` boundary:
+implemented the in-sandbox adversarial suite — 58 tests, plus the
+fork-buffer regression added with the P3 exec-bridge work (59 total), all
+exercising the real `RuntimeSession.execute()` → `run_in_sandbox()`
+boundary:
 
 | Attack category | Threats | Committed test module |
 |---|---|---|
@@ -314,8 +316,8 @@ away):
 
 **Substrate limitations (documented, preserved):**
 - Windows: AppArmor restricts unprivileged user namespaces; `setgroups` denies `EACCES`; sandbox init refuses at `platform_linux` stage
-- rootless cgroup v2: HARDENED mode requires cgroup delegation; if absent, HARDENED is refused
-- HARDENED end-to-end: full HARDENED mode (cgroups + seccomp + all caps dropped) requires Linux native with delegation; CI runs RESTRICTED on GitHub-hosted runners
+- rootless cgroup v2: HARDENED mode requires cgroup delegation; if absent, HARDENED is refused (fail closed, verified)
+- HARDENED end-to-end: **VERIFIED (NATIVE)** on Ubuntu 24.04 / kernel 6.8 / x86_64 (native QEMU VM) with a caller-owned delegated cgroup subtree (commit 7c1c30e); still refused where delegation is absent; GitHub-hosted runners run RESTRICTED (AppArmor userns restriction, unchanged)
 
 ### 10.1 Filesystem threats
 
@@ -422,7 +424,7 @@ away):
 |---|---|---|
 | RESTRICTED mode runs on all platforms | `test_skeleton.py` (real_non_linux_host_refuses_any_mode); CI passes on ubuntu + Windows | HOST-SIDE + CI verified |
 | HARDENED requires cgroup delegation | `test_cgroups.py::CgroupProbeTests` (hardened blocks without delegation); `test_skeleton.py` (hardened refuses when probe fails) | HOST-SIDE: probe + refusal verified; DOCKER: real cgroup probe |
-| HARDENED end-to-end on native Linux | P3 (commit e3b9873): `tests/native/test_hardened_e2e.py` substrate probe + 24 tests. Docker Desktop/WSL2: controllers available but NOT enabled in subtree_control; io.max unresolvable on overlay; WSL2 backend blocks /proc/self/status after pivot_root — HARDENED correctly refuses at RESOURCES (fail-closed). 5 probe tests pass, 19 skip with exact substrate reasons | SUBSTRATE VALIDATED / BLOCKED BY SUBSTRATE: HARDENED end-to-end NOT VERIFIED (requires native Linux with systemd Delegate=yes, real block device, proc readable after pivot_root) |
+| HARDENED end-to-end on native Linux | P3 (commit 7c1c30e): `tests/native/test_hardened_e2e.py` — 24/24 PASS, 0 fail, 0 error, 0 skip on Ubuntu 24.04 / kernel 6.8 / x86_64 native QEMU VM, caller-owned delegated cgroup subtree (controllers enabled: cpu io memory pids), real io.max backing device, toolchain `/opt/agent-sandbox-toolchain`. HARDENED reaches READY; workload executes; seccomp active + socket() denied; capabilities zero; no_new_privs=1; PID/network namespaces isolated; six approved env vars only; timeout + cleanup verified; audit session identity correct. Earlier substrate run (commit e3b9873, Docker Desktop/WSL2: controllers available but NOT enabled in subtree_control; io.max unresolvable on overlay) correctly refused at RESOURCES — preserved as historical evidence | HARDENED END-TO-END VERIFIED (NATIVE) on the documented Ubuntu 24.04 / kernel 6.8 / x86_64 substrate only; NOT generalized to other kernels/distros, aarch64, CI runners, or proof of the entire SECURITY_SPEC.md. HARDENED still refuses execution when mandatory cgroup delegation/resources cannot be established (fail closed, verified) |
 
 ### 10.11 Interface-phase evidence
 
@@ -440,17 +442,17 @@ away):
 
 | Classification | Count | Notes |
 |---|---|---|
-| NATIVE VERIFIED (real boundary) | 21 | Phase 2 P1/P2 in-sandbox adversarial suites (58 tests) through the real boundary |
+| NATIVE VERIFIED (real boundary) | 22 | Phase 2 P1/P2 in-sandbox adversarial suites (58 tests) through the real boundary + P3 HARDENED e2e suite (24 tests, commit 7c1c30e) on the documented native substrate |
 | DOCKER VERIFIED | 24 | Real sandbox execution inside Docker container |
 | HOST-SIDE VERIFIED | 7 | Policy/interface/mode gate verified host-side or on CI (no runtime attack test) |
 | DESIGN INTENT | 2 | T-015 (SSRF), T-017 (DNS) -- deferred to v0.2 (no network in v0.1) |
 
-**Substrate-gated (see 10.10):** HARDENED end-to-end (P3) and aarch64 filter install/enforcement (P4) remain NOT VERIFIED / substrate limitation.
+**Substrate-gated (see 10.10):** aarch64 filter install/enforcement (P4) remains NOT VERIFIED / substrate limitation. HARDENED end-to-end (P3) is now VERIFIED (NATIVE) on the documented Ubuntu 24.04 / kernel 6.8 / x86_64 substrate (commit 7c1c30e).
 
 **Key gaps (by design, documented):**
-1. **HARDENED end-to-end (P3)** -- SUBSTRATE VALIDATED / BLOCKED: Docker Desktop lacks delegated cgroup controllers in subtree_control and a real block device for io.max; WSL2 backend blocks /proc/self/status after pivot_root. Requires native Linux with systemd Delegate=yes. Fail-closed refusal at RESOURCES verified; HARDENED execution NOT VERIFIED
+1. **HARDENED end-to-end (P3)** -- now HARDENED END-TO-END VERIFIED (NATIVE) on the documented Ubuntu 24.04 / kernel 6.8 / x86_64 QEMU VM with a caller-owned delegated cgroup subtree (commit 7c1c30e, 24/24 PASS). The fail-closed refusal at RESOURCES when delegation is absent remains correct and verified on substrates without it (earlier e3b9873 Docker/WSL2 run preserved as historical evidence)
 2. **aarch64 runtime (P4)** -- allowlist derivation (43 syscalls), BPF construction, AUDIT_ARCH_AARCH64 guard, syscall-number validity all HOST-VERIFIED; filter installation/enforcement NOT VERIFIED (Docker Desktop's runtime seccomp blocks PR_SET_SECCOMP; requires native aarch64)
 3. **T-015 / T-017 (network)** -- DESIGN INTENT: no network exists in v0.1 (deny by construction); SSRF/DNS abuse verification deferred to v0.2 when network allowlists are introduced
 4. **rootless cgroup v2** -- HARDENED refused when delegation absent; documented gap, not silently degraded
 
-**No false claims detected:** The updated evidence table does not claim "fully verified" where only Docker or host-side evidence exists; every Phase 2 adversarial result is labeled NATIVE VERIFIED (real boundary) with the exact committed test module, and P3/P4 remain honestly classified as SUBSTRATE-LIMITED.
+**No false claims detected:** The updated evidence table does not claim "fully verified" where only Docker or host-side evidence exists; every Phase 2 adversarial result is labeled NATIVE VERIFIED (real boundary) with the exact committed test module. P3 HARDENED end-to-end is labeled VERIFIED (NATIVE) only for the documented Ubuntu 24.04 / kernel 6.8 / x86_64 substrate (commit 7c1c30e, 24/24 PASS); P4 aarch64 runtime enforcement remains honestly classified as SUBSTRATE-LIMITED / NOT VERIFIED.
