@@ -24,8 +24,8 @@ import json
 import pathlib
 import sys
 
-EXPECTED_COUNT_X86_64 = 46
-EXPECTED_COUNT_AARCH64 = 43
+EXPECTED_COUNT_X86_64 = 69
+EXPECTED_COUNT_AARCH64 = 66
 
 HERE = pathlib.Path(__file__).resolve().parent
 ARTIFACT_X86_64 = HERE / "allowlist.json"

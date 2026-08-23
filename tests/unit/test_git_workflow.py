@@ -121,7 +121,7 @@ class GitArgvTests(unittest.TestCase):
                 encoding="utf-8"))
         self.assertIn("chdir", allowlist["allowlist"])
         self.assertEqual(
-            len(allowlist["tier0"]) + len(allowlist["tier1"]), 46)
+            len(allowlist["tier0"]) + len(allowlist["tier1"]), 69)
         self.assertEqual(allowlist["tier0"], sorted(allowlist["tier0"]))
         self.assertEqual(allowlist["tier1"], sorted(allowlist["tier1"]))
 

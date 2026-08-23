@@ -4,7 +4,7 @@ Run: python3 test_derivation.py   (exit 0 = all pass)
 
 Covers:
 - trace parser (parse_trace) on sample strace output
-- allowlist.json artifact integrity (46, sorted, unique, tiers, default action)
+- allowlist.json artifact integrity (69, sorted, unique, tiers, default action)
 - trace regression gate: detects undocumented expansion; passes on the
   committed evidence record
 - BPF builder structure (instruction layout, default-deny before allow)
@@ -62,7 +62,7 @@ check("parse_trace captures getpid", counts["getpid"] == 1)
 # --- artifact integrity ---
 artifact = json.loads((HERE / "allowlist.json").read_text(encoding="utf-8"))
 allow = artifact["allowlist"]
-check("allowlist has exactly 46 syscalls", len(allow) == 46)
+check("allowlist has exactly 69 syscalls", len(allow) == 69)
 check("allowlist is sorted", allow == sorted(allow))
 check("allowlist has no duplicates", len(set(allow)) == len(allow))
 check("tier0 + tier1 == allowlist", set(artifact["tier0"]) | set(artifact["tier1"]) == set(allow))

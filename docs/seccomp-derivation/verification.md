@@ -1390,3 +1390,112 @@ delegation-capable skip); hostile-config host-side tests unchanged
 PASS. The Phase C real-boundary evidence classification moves from
 "blocked/skipped (misleading reason)" to **NATIVE VERIFIED** on the
 documented substrate.
+
+## v0.2 Networking Prerequisites (2026-08-23)
+
+**Change (documented expansion per policy.md §5):** Eight networking
+syscalls added to the x86_64 allowlist for v0.2 proxy communication:
+
+| Syscall | Tier | Purpose |
+|---|---|---|
+| `socket` | 0 | Create AF_INET/SOCK_STREAM socket for proxy connection |
+| `connect` | 0 | Connect to validating proxy on 127.0.0.1 |
+| `sendto` | 1 | Send data to proxy |
+| `recvfrom` | 1 | Receive data from proxy |
+| `getsockopt` | 1 | Read socket options (SO_ERROR, etc.) |
+| `setsockopt` | 1 | Set socket options (SO_REUSEADDR, etc.) |
+| `getsockname` | 1 | Get local socket address |
+| `getpeername` | 1 | Get remote socket address |
+
+**Delta:** 46 → 54 (tier0=27→29, tier1=19→25).
+
+**Deliberately excluded:** `shutdown` (proxy handles lifecycle),
+`sendmsg`/`recvmsg` (not needed for stream sockets), `bind`/`listen`/
+`accept`/`accept4` (workload is client, not server), `socketpair` (not
+needed for AF_INET), `clone`/`clone3` (remain denied — threading not
+required).
+
+**Security impact:** Network syscalls in isolation do not grant network
+access — the network namespace (no interfaces, loopback down) and
+seccomp are independent layers. The new syscalls enable loopback-only
+communication with the future validating proxy. SSRF protection is
+enforced by the proxy, not by seccomp. The allowlist is the minimum
+required set; no syscall was added for convenience.
+
+**aarch64:** allowlist_aarch64.json updated correspondingly
+(43 → 51, tier0=26→28, tier1=17→23).
+
+**Native verification:** Pending native VM substrate availability.
+Host-side derivation tests, trace regression gate, and behavioral probe
+verification to be performed on the native Ubuntu 24.04 / kernel 6.8
+substrate.
+
+## v0.2 Toolchain Variants (2026-08-23)
+
+### Native trace on Ubuntu 24.04 / kernel 6.8 / x86_64
+
+15 additional syscalls observed in the native trace but absent from the
+54-syscall allowlist. All added as tier1. Total: 54 → 69
+(tier0=29, tier1=40).
+
+| Syscall | Tier | x86_64 nr | Calls | Workload | Justification |
+|---|---|---|---|---|---|
+| `chmod` | 1 | 90 | 7 | git_basics | git sets file permissions on objects |
+| `close_range` | 1 | 436 | 2 | python_agentish | glibc 2.39 batch fd close at interpreter shutdown |
+| `copy_file_range` | 1 | 326 | 2 | sh_fileops | coreutils `cp` kernel-space copy |
+| `fadvise64` | 1 | 221 | 2 | sh_fileops | glibc I/O advisory hints |
+| `fstatfs` | 1 | 197 | 1 | sh_fileops | coreutils filesystem stats |
+| `lgetxattr` | 1 | 192 | 890 | sh_fileops | coreutils `ls -la` xattr listing |
+| `link` | 1 | 86 | 1 | git_basics | git hard-linked objects |
+| `listxattr` | 1 | 194 | 890 | sh_fileops | coreutils `ls -la` xattr enumeration |
+| `rename` | 1 | 82 | 9 | git_basics | git atomic file operations |
+| `statfs` | 1 | 137 | 6 | sh_fileops | coreutils filesystem type/size |
+| `statx` | 1 | 332 | 890 | sh_fileops | glibc 2.39 modern stat (replaces stat/fstatat) |
+| `symlink` | 1 | 88 | 1 | git_basics | git refs symlinks |
+| `umask` | 1 | 95 | 2 | sh_fileops | shell file creation mask |
+| `uname` | 1 | 63 | 1 | sh_fileops | system info query |
+| `unlinkat` | 1 | 263 | 4 | git_basics/sh_fileops | modern unlink (replaces unlink) |
+
+**Delta:** 54 → 69 (tier0=29 unchanged, tier1=25→40).
+
+**Security impact:** All 15 are filesystem/metadata operations confined
+to the mount namespace. None enables privilege escalation, namespace
+escape, capability changes, network access, or sandbox escape.
+`clone`/`clone3` remain denied. Network namespace remains
+deny-by-construction.
+
+**aarch64 mappings** (verified against `asm-generic/unistd.h`):
+
+| x86_64 name | aarch64 name | aarch64 nr |
+|---|---|---|
+| `chmod` | `fchmodat` | 53 |
+| `close_range` | `close_range` | 436 |
+| `copy_file_range` | `copy_file_range` | 285 |
+| `fadvise64` | `fadvise64` | 223 |
+| `fstatfs` | `fstatfs` | 44 |
+| `lgetxattr` | `lgetxattr` | 9 |
+| `link` | `linkat` | 37 |
+| `listxattr` | `listxattr` | 11 |
+| `rename` | `renameat2` | 276 |
+| `statfs` | `statfs` | 43 |
+| `statx` | `statx` | 291 |
+| `symlink` | `symlinkat` | 36 |
+| `umask` | `umask` | 166 |
+| `uname` | `uname` | 160 |
+| `unlinkat` | `unlinkat` | 35 (already allowed) |
+
+**aarch64 delta:** 51 → 66 (tier0=28, tier1=23→38).
+
+**Native verification status:** x86_64 native trace performed on
+Ubuntu 24.04.4 LTS / kernel 6.8.0-137-generic. Trace-regression
+gate: 15 missing syscalls identified → all 15 added via change
+control. aarch64 numbers derived from kernel headers; native aarch64
+trace NOT yet performed.
+
+**Change-control process:** Followed policy.md §5. Each syscall
+classified in syscall-classification.md §1.7. allowlist.json updated
+(version 3). allowlist_aarch64.json updated (version 2). seccomp.py
+_X86_64 table updated. check_trace_regression.py expected counts
+updated. Behavioral probe updated (socketpair replaces socket as
+denied-test). All derivation tests pass (18/18). Full unit suite
+passes (761/761).

@@ -22,31 +22,38 @@ exercise (methodology + classification) · Implementation: Phase 1 step 13
 
 ## 2. The allowlist (Stage B — workload execution)
 
-46 syscalls (27 tier0 + 19 tier1), all derived and classified in
+69 syscalls (29 tier0 + 40 tier1), all derived and classified in
 `syscall-classification.md`:
 
-    access arch_prctl brk chdir close dup2 epoll_create1 execve
-    exit_group fcntl fstat futex getcwd getdents64 getegid geteuid
-    getgid getpid getppid getrandom gettid getuid ioctl lseek mkdir
-    mmap mprotect munmap newfstatat openat pipe2 poll pread64 prlimit64
-    read readlink rseq rt_sigaction rt_sigprocmask rt_sigreturn
-    set_robust_list set_tid_address unlink vfork wait4 write
+    access arch_prctl brk chmod chdir close close_range connect
+    copy_file_range dup2 epoll_create1 execve exit_group fadvise64
+    fcntl fstat fstatfs futex getcwd getdents64 getegid geteuid
+    getgid getpeername getpid getppid getrandom getsockname
+    getsockopt gettid getuid ioctl lgetxattr link listxattr lseek
+    mkdir mmap mprotect munmap newfstatat openat pipe2 poll pread64
+    prlimit64 read readlink recvfrom rename rseq rt_sigaction
+    rt_sigprocmask rt_sigreturn sendto set_robust_list
+    set_tid_address setsockopt socket statfs statx symlink umask
+    uname unlink unlinkat vfork wait4 write
 
 Machine-readable form (single source of truth):
 `tools/seccomp-derivation/allowlist.json`. The behavioral probe loads it;
 the regression gate (`check_trace_regression.py`) fails any observed
 syscall outside it; the unit suite (`test_derivation.py`) pins its
-integrity (46, sorted, unique, default action).
+integrity (69, sorted, unique, default action).
 
 ## 3. What is denied and why (summary)
 
-- **Network syscall class** (`socket` family): denied — v0.1 network is
-  deny-by-construction; syscall-level denial is defense-in-depth.
+- **Network syscall class** (`socketpair`, `bind`, `listen`, `accept`,
+  `accept4`, `sendmsg`, `recvmsg`, `shutdown`): denied. `socket`,
+  `connect`, `sendto`, `recvfrom`, `getsockopt`, `setsockopt`,
+  `getsockname`, `getpeername` are now ALLOWED for v0.2 proxy
+  communication (see §5 changelog).
 - **Namespace class** (`unshare`, `setns`, `mount`-class, `pivot_root`,
   `chroot`): denied — the sandbox must never change its own isolation.
 - **Process-inspection class** (`ptrace`, `process_vm_*`): denied.
 - **Privilege class** (`setuid`-class, `setgid`-class, `capset`,
-  `chmod`-class, `chown`-class, `mknod`): denied — uid mapping happens in
+  `chown`-class, `mknod`): denied — uid mapping happens in
   Stage A; the workload never needs these.
 - **Thread class** (`clone`, `clone3`): denied — not required by the
   traced surface; also the namespace-flag vector. Consequence documented:
@@ -119,12 +126,54 @@ The allowlist is a regression-protected security artifact
   container records are preserved verbatim with a note in
   `trace-results.json`.
 
+- **2026-08-23 — `+socket, connect, sendto, recvfrom, getsockopt,
+  setsockopt, getsockname, getpeername` (tier0+1, 46 → 54;
+  tier0=29, tier1=25).** v0.2 networking prerequisites: minimum syscall
+  set for sandbox-to-proxy loopback communication. `socket`+`connect`
+  (tier0) required to create and connect to the validating proxy on
+  `127.0.0.1`. `sendto`+`recvfrom`+`getsockopt`+`setsockopt`
+  +`getsockname`+`getpeername` (tier1) required for data transfer and
+  socket option management. Deliberately excluded: `shutdown` (proxy
+  handles lifecycle), `sendmsg`/`recvmsg` (not needed for stream
+  sockets), `bind`/`listen`/`accept` (workload is client, not server),
+  `clone`/`clone3` (remain denied — threading not required for proxy
+  communication). Security impact: network syscalls in isolation do not
+  grant network access — the network namespace (no interfaces, loopback
+  down) and seccomp are independent layers. The proxy validates all
+  outbound destinations. SSRF protection is enforced by the proxy, not
+  by seccomp. Native verification pending substrate availability.
+  aarch64 allowlist updated correspondingly (43 → 51).
+
+- **2026-08-23 — `+chmod, close_range, copy_file_range, fadvise64,
+  fstatfs, lgetxattr, link, listxattr, rename, statfs, statx, symlink,
+  umask, uname, unlinkat` (tier1, 54 → 69; tier0=29, tier1=40).**
+  Native Ubuntu 24.04 / kernel 6.8 / x86_64 trace of the complete
+  workload set observed 63 unique syscalls. 15 syscalls not in the
+  54-syscall allowlist were identified via `check_trace_regression.py`.
+  All 15 are legitimate toolchain operations: glibc runtime (`close_range`
+  batch fd close, `fadvise64` I/O hints, `statx` modern file stat),
+  coreutils (`copy_file_range` kernel copy, `fstatfs`/`statfs` fs stats,
+  `lgetxattr`/`listxattr` xattr queries, `umask`/`uname` process/system
+  info, `unlinkat` modern unlink), and git (`chmod` object permissions,
+  `link` hard-linked objects, `rename` atomic file ops, `symlink` refs).
+  All 15 are tier1. None enables privilege escalation, namespace escape,
+  capability changes, network access, or sandbox escape. `chmod`/`link`/
+  `symlink`/`rename` operate only on workload-created files within the
+  mount namespace. `clone`/`clone3` remain denied. Network namespace
+  remains deny-by-construction. aarch64 mappings verified against
+  `asm-generic/unistd.h`: `chmod`→`fchmodat`(53), `link`→`linkat`(37),
+  `symlink`→`symlinkat`(36), `rename`→`renameat2`(276); `unlinkat` was
+  already in the aarch64 allowlist.
+
 ## 6. Known limitations (documented, not hidden)
 
 - CPython `threading` / thread-based `multiprocessing` are unavailable
   (no `clone`). Re-derive when threads enter the required surface.
-- No network syscalls of any kind (also enforced by the netns); socket-
-  based libraries fail. Intended for v0.1.
+- v0.2 networking syscalls (socket, connect, etc.) are now allowed, but
+  the network namespace remains deny-by-construction until the proxy
+  infrastructure is implemented. The syscalls are available for the
+  proxy communication path; general outbound networking is not yet
+  possible.
 - x86_64/glibc-specific; other architectures must re-derive.
 - `ioctl` remains broad; bounded by minimal `/dev` and dropped
   capabilities.

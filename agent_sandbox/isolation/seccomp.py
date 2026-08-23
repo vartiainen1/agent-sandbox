@@ -11,7 +11,7 @@ allowlist.
 
 The policy is NOT re-derived or embedded here: the single source of
 truth is the regression-protected artifact
-``tools/seccomp-derivation/allowlist.json`` (46 syscalls as of the
+``tools/seccomp-derivation/allowlist.json`` (54 syscalls as of the
 2026-08-22 documented +chdir expansion for the git closed set; default-
 deny EPERM; change control in policy.md section 5 - NO UNDOCUMENTED
 SYSCALL EXPANSION). This module loads it at program-build time on the trusted
@@ -78,18 +78,23 @@ _EPERM = 1
 # cross-checked with the derivation probe's SYS table). The runtime only
 # ever loads these on x86_64 (architecture guard below).
 _X86_64 = {
-    "access": 21, "arch_prctl": 158, "brk": 12, "chdir": 80, "close": 3,
-    "dup2": 33,
-    "epoll_create1": 291, "execve": 59, "exit_group": 231, "fcntl": 72,
-    "fstat": 5, "futex": 202, "getcwd": 79, "getdents64": 217,
-    "getegid": 108, "geteuid": 107, "getgid": 104, "getpid": 39,
-    "getppid": 110, "getrandom": 318, "gettid": 186, "getuid": 102,
-    "ioctl": 16, "lseek": 8, "mkdir": 83, "mmap": 9, "mprotect": 10,
-    "munmap": 11, "newfstatat": 262, "openat": 257, "pipe2": 293,
-    "poll": 7, "pread64": 17, "prlimit64": 302, "read": 0, "readlink": 89,
-    "rseq": 334, "rt_sigaction": 13, "rt_sigprocmask": 14,
-    "rt_sigreturn": 15, "set_robust_list": 273, "set_tid_address": 218,
-    "unlink": 87, "vfork": 58, "wait4": 61, "write": 1,
+    "access": 21, "arch_prctl": 158, "brk": 12, "chmod": 90, "chdir": 80,
+    "close": 3, "close_range": 436, "connect": 42, "copy_file_range": 326,
+    "dup2": 33, "epoll_create1": 291, "execve": 59, "exit_group": 231,
+    "fadvise64": 221, "fcntl": 72, "fstat": 5, "fstatfs": 197,
+    "futex": 202, "getcwd": 79, "getdents64": 217, "getegid": 108,
+    "geteuid": 107, "getgid": 104, "getpeername": 51, "getpid": 39,
+    "getppid": 110, "getrandom": 318, "getsockname": 50, "getsockopt": 55,
+    "gettid": 186, "getuid": 102, "ioctl": 16, "lgetxattr": 192,
+    "link": 86, "listxattr": 194, "lseek": 8, "mkdir": 83, "mmap": 9,
+    "mprotect": 10, "munmap": 11, "newfstatat": 262, "openat": 257,
+    "pipe2": 293, "poll": 7, "pread64": 17, "prlimit64": 302, "read": 0,
+    "readlink": 89, "recvfrom": 45, "rename": 82, "rseq": 334,
+    "rt_sigaction": 13, "rt_sigprocmask": 14, "rt_sigreturn": 15,
+    "sendto": 44, "set_robust_list": 273, "set_tid_address": 218,
+    "setsockopt": 54, "socket": 41, "statfs": 137, "statx": 332,
+    "symlink": 88, "umask": 95, "uname": 63, "unlink": 87,
+    "unlinkat": 263, "vfork": 58, "wait4": 61, "write": 1,
 }
 
 

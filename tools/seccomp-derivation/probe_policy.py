@@ -39,8 +39,16 @@ SYS = {
     "epoll_create1": 291,
     "pipe2": 293, "prlimit64": 302, "getrandom": 318, "rseq": 334,
     "poll": 7,
+    # v0.2 networking — now allowed in the allowlist
+    "socket": 41, "connect": 42, "sendto": 44, "recvfrom": 45,
+    "getsockopt": 55, "setsockopt": 54, "getsockname": 50, "getpeername": 51,
+    # v0.2 toolchain variants (native Ubuntu 24.04 / kernel 6.8 trace)
+    "chmod": 90, "close_range": 436, "copy_file_range": 326,
+    "fadvise64": 221, "fstatfs": 197, "lgetxattr": 192, "link": 86,
+    "listxattr": 194, "rename": 82, "statfs": 137, "statx": 332,
+    "symlink": 88, "umask": 95, "uname": 63, "unlinkat": 263,
     # denied probes (must NOT be in the allowlist)
-    "socket": 41, "ptrace": 101, "mount": 165, "chroot": 161,
+    "ptrace": 101, "mount": 165, "chroot": 161,
     "unshare": 272, "clone": 56,
 }
 
@@ -149,8 +157,9 @@ def in_filter_child(pipe_fd) -> int:
         # allowed: getpid must succeed
         pid = syscall_ret(SYS["getpid"])
         checks.append(("allowed getpid", pid > 0))
-        # denied: socket / ptrace / mount / chroot / unshare / clone
-        for name in ("socket", "ptrace", "mount", "chroot", "unshare", "clone"):
+        # denied: ptrace / mount / chroot / unshare / clone
+        # (socket is now ALLOWED for v0.2 proxy communication)
+        for name in ("ptrace", "mount", "chroot", "unshare", "clone"):
             r = syscall_ret(SYS[name], 0, 0, 0)
             err = ctypes.get_errno()
             checks.append((f"denied {name}", r == -1 and err == 1))  # EPERM
@@ -210,7 +219,7 @@ def main() -> int:
 
     # 1) in-process syscall-level checks under the filter
     rc, out = spawn_and_observe(in_filter_child)
-    results.append(("syscall-level probes (socket/ptrace/mount/chroot/unshare/clone -> EPERM)", rc == 0, out))
+    results.append(("syscall-level probes (ptrace/mount/chroot/unshare/clone -> EPERM)", rc == 0, out))
 
     # 2) legitimate Tier 0 workload must pass under the filter
     rc, out = spawn_and_observe(workload_child, ["/bin/sh", "-c", "echo hello"])
@@ -218,7 +227,7 @@ def main() -> int:
 
     # 3) prohibited operations in real programs must fail
     for name, cmd in [
-        ("python socket() blocked", ["python3", "-c", "import socket; socket.socket()"]),
+        ("python socketpair() blocked", ["python3", "-c", "import socket; socket.socketpair()"]),
         ("python clone/threading blocked", ["python3", "-c",
                                             "import threading; threading.Thread(target=lambda: None).start()"]),
         ("sh mount blocked", ["/bin/sh", "-c", "mount 2>/dev/null || echo MOUNT_BLOCKED"]),

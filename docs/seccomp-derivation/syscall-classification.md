@@ -15,7 +15,7 @@ Legend:
 
 ---
 
-## 1. Allowed syscalls (46)
+## 1. Allowed syscalls (69)
 
 ### 1.1 Process lifecycle and creation
 
@@ -88,13 +88,74 @@ Legend:
 | `getgid` | 0 | glibc | No | identity queries fail | None | ALLOW |
 | `getegid` | 0 | glibc | No | identity queries fail | None | ALLOW |
 
-**Count: 46 ALLOW** (27 tier0 + 19 tier1; +`chdir` added 2026-08-22 per the
-change-control process in policy.md §5 — native closed-set git trace in
-`trace-results.json` `t1_git_closedset`). No syscall in the allowed set
-enables privilege escalation, namespace manipulation, process inspection
-of the host, or
-networking on its own; the three broad ones (`ioctl`, `prlimit64`,
-`openat`) are documented above with the layers that bound them.
+### 1.6 Networking — v0.2 proxy communication (added 2026-08-23)
+
+The minimum networking syscalls required for sandbox-to-proxy loopback
+communication in v0.2. The sandbox workload connects to the validating
+proxy on `127.0.0.1` over a stream socket; the proxy validates all
+destinations before forwarding.
+
+| Syscall | Tier | Required by | Can it be removed? | What breaks? | Security impact if allowed | Decision |
+|---|---|---|---|---|---|---|
+| `socket` | 0 | proxy communication — create AF_INET/SOCK_STREAM socket | No | no socket creation; proxy communication impossible | Creates a socket object; no data flows until `connect`. The network namespace restricts which addresses are reachable (only the proxy on loopback); seccomp allows the syscall but the kernel enforces network isolation | ALLOW |
+| `connect` | 0 | proxy communication — connect to proxy on 127.0.0.1 | No | cannot connect to proxy | Establishes a connection; destination restricted by the network namespace (only loopback is reachable in the v0.2 proxy-on-loopback model). The proxy validates all outbound destinations. Without `connect`, no data flows | ALLOW |
+| `sendto` | 1 | data transfer to proxy | Removable for Tier 0 | cannot send data to proxy | Sends data on a connected socket; no privilege escalation; data goes only to the proxy (network namespace restriction) | ALLOW |
+| `recvfrom` | 1 | data transfer from proxy | Removable for Tier 0 | cannot receive data from proxy | Receives data from a connected socket; no privilege escalation; data comes only from the proxy | ALLOW |
+| `getsockopt` | 1 | socket option queries (SO_ERROR, etc.) | Removable for Tier 0 | error handling breaks; socket state cannot be queried | Reads socket metadata; no privilege escalation; no network boundary escape | ALLOW |
+| `setsockopt` | 1 | socket option setting (SO_REUSEADDR, etc.) | Removable for Tier 0 | some socket configurations fail | Sets socket options; dangerous options (SO_PASSCRED, etc.) are not needed for basic proxy communication; no privilege escalation | ALLOW |
+| `getsockname` | 1 | local address identification | Removable for Tier 0 | cannot identify local socket address | Returns the local address of a socket; no privilege escalation; no network boundary escape | ALLOW |
+| `getpeername` | 1 | remote address identification | Removable for Tier 0 | cannot identify remote socket address | Returns the remote address of a connected socket; no privilege escalation; no network boundary escape | ALLOW |
+
+**Deliberately excluded from this change:**
+- `shutdown` — not needed for basic proxy communication; the proxy handles connection lifecycle
+- `sendmsg`/`recvmsg` — not needed for stream sockets; `sendto`/`recvfrom` suffice
+- `clone`/`clone3` — remain denied; threading not required for proxy communication
+- `bind` — not needed; the workload connects to the proxy, it does not listen
+- `listen`/`accept`/`accept4` — not needed; the workload is a client, not a server
+- `socketpair` — not needed; proxy uses AF_INET sockets
+
+### 1.7 Native toolchain variants (added 2026-08-23)
+
+Observed on the canonical native Ubuntu 24.04 / kernel 6.8 / x86_64
+substrate. The original 46-syscall derivation (2026-08-19) was traced
+inside a minimal derivation container (ubuntu:24.04 with strace, python3,
+git, coreutils, bash). The native VM runs a different glibc/coreutils
+build that uses additional syscalls.
+
+| Syscall | Tier | Required by | Can it be removed? | What breaks? | Security impact if allowed | Decision |
+|---|---|---|---|---|---|---|
+| `chmod` | 1 | git (object store permissions) | No | `git init` / `git add` fail | No privilege gain inside unprivileged namespace; `CAP_FOWNER` not held; nosuid enforced on mount | ALLOW |
+| `close_range` | 1 | Python 3.12 / glibc 2.39 (batch fd close at interpreter shutdown) | No | Python interpreter cleanup errors | Closes only the process's own fd table; cannot close other processes' fds | ALLOW |
+| `copy_file_range` | 1 | coreutils `cp` (kernel-space file copy) | No | `cp` fails | Copies data between two fds within the process; no cross-mount or cross-namespace copy | ALLOW |
+| `fadvise64` | 1 | glibc buffered I/O (advisory hint) | No | glibc I/O errors | Advisory-only; kernel may ignore entirely; no data or permission change | ALLOW |
+| `fstatfs` | 1 | coreutils filesystem stats | No | `stat`/`df`/`ls -la` fail | Read-only metadata query | ALLOW |
+| `lgetxattr` | 1 | coreutils `ls -la` (extended attribute listing) | No | `ls -la` display incomplete | Read-only xattr query; 890 calls from `ls -la /tmp` | ALLOW |
+| `link` | 1 | git (hard-linked objects in object store) | No | `git add` / object storage fail | Hard links confined to mount namespace; cannot link across mount boundaries | ALLOW |
+| `listxattr` | 1 | coreutils `ls -la` (extended attribute enumeration) | No | `ls -la` display incomplete | Read-only xattr enumeration; 890 calls from `ls -la /tmp` | ALLOW |
+| `rename` | 1 | git (atomic file operations in object store) | No | `git init` / `git add` fail | Atomic rename within mount namespace; cannot rename across mount boundaries | ALLOW |
+| `statfs` | 1 | coreutils filesystem type/size queries | No | filesystem stat operations fail | Read-only metadata query | ALLOW |
+| `statx` | 1 | glibc 2.39 (modern file stat, replaces `stat`/`fstatat`) | No | all stat-like operations fail | Read-only metadata query; glibc transparently uses `statx()` | ALLOW |
+| `symlink` | 1 | git (refs symlinks in `.git/refs/`) | No | git ref management fails | Symlinks confined to workspace; TOCTOU protection via Phase 16 race tests | ALLOW |
+| `umask` | 1 | shell startup (file creation mask) | No | file creation permissions unpredictable | Only restricts (never widens) file creation permissions | ALLOW |
+| `uname` | 1 | coreutils / build scripts (system info query) | No | build scripts / `uname` command fail | Read-only system information | ALLOW |
+| `unlinkat` | 1 | coreutils `rm` / git cleanup (modern unlink) | No | `rm -rf` / git cleanup fail | Cannot unlink files the process does not own; confined to mount namespace | ALLOW |
+
+**aarch64 note**: On aarch64, glibc uses `*at()` variants for all of
+the above: `chmod` → `fchmodat` (53), `link` → `linkat` (37), `symlink`
+→ `symlinkat` (36), `rename` → `renameat2` (276). Numbers verified
+against `include/uapi/asm-generic/unistd.h`.
+
+---
+
+**Count: 69 ALLOW** (29 tier0 + 40 tier1; +8 networking syscalls added
+2026-08-23 per the change-control process in policy.md §5 for v0.2
+networking prerequisites; +15 toolchain-variant syscalls added 2026-08-23
+per the native Ubuntu 24.04 / kernel 6.8 trace). No syscall in the
+allowed set enables privilege escalation, namespace manipulation, or host
+process inspection. The networking syscalls enable loopback-only
+communication with the validating proxy; the network namespace and the
+proxy enforce all outbound destination restrictions. `ioctl`, `prlimit64`,
+and `openat` remain documented with their bounding layers.
 
 ---
 
@@ -108,7 +169,7 @@ behaviorally.
 
 | Syscall(s) | Why denied |
 |---|---|
-| `socket`, `socketpair`, `connect`, `bind`, `listen`, `accept`, `accept4`, `sendto`, `recvfrom`, `sendmsg`, `recvmsg`, `getsockopt`, `setsockopt`, `shutdown`, `getpeername`, `getsockname` | Networking. v0.1 is deny-by-construction (no interfaces, loopback down); syscall-level denial is defense-in-depth and also blocks AF_UNIX. Verified: `python socket()` → EPERM |
+| `socketpair`, `bind`, `listen`, `accept`, `accept4`, `sendmsg`, `recvmsg`, `shutdown` | Networking — not yet needed. `socket`, `connect`, `sendto`, `recvfrom`, `getsockopt`, `setsockopt`, `getsockname`, `getpeername` are now ALLOWED for v0.2 proxy communication (see §1.6). The remaining networking syscalls are denied because: (a) `socketpair` — not needed for AF_INET proxy communication; (b) `bind`/`listen`/`accept`/`accept4` — the workload is a client, not a server; (c) `sendmsg`/`recvmsg` — not needed for stream sockets; (d) `shutdown` — the proxy handles connection lifecycle. v0.1 behavior: `socket()` returned EPERM; v0.2 behavior: `socket()` creates a socket, but `connect()` to non-loopback targets fails (netns restriction + proxy validation) |
 | `clone`, `clone3` | Thread/process creation with flags. Denied because (a) no workload needed it (only `vfork` was observed), and (b) `clone(CLONE_NEW*)` is a namespace-escape primitive. Verified: `threading.Thread().start()` → EPERM. **Known limitation**: CPython threading and thread-based multiprocessing are unavailable in v0.1 |
 | `unshare`, `setns` | Namespace manipulation — the sandbox must never change its own isolation |
 | `mount`, `umount2`, `pivot_root`, `chroot`, `chroot`-class | Filesystem/namespace boundary manipulation. Verified: `mount` → EPERM |
@@ -118,8 +179,9 @@ behaviorally.
 | `init_module`, `finit_module`, `delete_module` | Kernel module loading |
 | `mknod`, `mknodat` | Device node creation |
 | `setuid`, `setgid`, `setgroups`, `capset`, `setresuid`-class, `setresgid`-class | Identity/privilege change. The userns uid mapping is done in Stage A (unfiltered); the workload never needs these |
-| `chmod`, `fchmod`, `fchmodat`, `chown`, `fchown`, `lchown`, `fchownat` | Metadata/ownership change — not observed in the traced surface; denied until a workload genuinely requires it (re-derive) |
-| `rename`, `renameat`, `renameat2`, `link`, `linkat`, `symlink`, `symlinkat` | Not observed; denied. Hardlink/symlink creation is a filesystem-boundary concern; if a future workload needs them, re-derive with rationale |
+| `fchmod`, `chown`, `fchown`, `lchown`, `fchownat` | Ownership change — not required by the current workload surface |
+| `renameat`, `renameat2` (separate from `rename`) | Superseded on x86_64 by the legacy `rename` (now allowed) |
+| `linkat` (separate from `link`), `symlinkat` (separate from `symlink`) | Superseded on x86_64 by the legacy `link`/`symlink` (now allowed) |
 | `setxattr`, `lsetxattr`, `fsetxattr`, `removexattr`-class | Not observed; denied |
 | `madvise`, `readv`, `writev`, `sendfile`, `pwrite64`, `open` (legacy), `stat`, `lstat`, `oldstat`-class | Not observed in the traced surface; denied per prefer-removal. (Python/C can fall back to read/write/pread64; if a real workload needs e.g. `writev`, re-derive) |
 | everything else | Default-deny: any syscall not explicitly allowed returns EPERM |

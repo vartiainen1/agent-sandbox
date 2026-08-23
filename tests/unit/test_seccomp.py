@@ -1,5 +1,5 @@
 """Phase 1 Step 8 tests - seccomp filter installation (REAL Linux
-execution, S-011, ADR-008): the derived 46-syscall default-deny filter is
+execution, S-011, ADR-008): the derived 69-syscall default-deny filter is
 installed as the LAST Stage-A operation (after no_new_privs + capability
 reduction) and verified by kernel-observable read-back (Seccomp=2,
 Seccomp_filters=1) plus a forbidden-syscall spot check. Install failure,
@@ -41,19 +41,28 @@ skip_unless_linux = unittest.skipUnless(
     LINUX, "real seccomp operations require Linux with os.fork "
            "(non-Linux fail-closed behavior is covered by test_skeleton.py)")
 
-# The 46-syscall derived allowlist (pinned - NO UNDOCUMENTED EXPANSION;
+# The 69-syscall derived allowlist (pinned - NO UNDOCUMENTED EXPANSION;
 # policy.md section 5). Any change must go through the derivation process.
-# 46 = 27 tier0 + 19 tier1: +chdir (tier1) added 2026-08-22 for the Phase C
-# closed-set git workload (native verification, see allowlist.json changelog).
+# 69 = 29 tier0 + 40 tier1: +chdir (2026-08-22 Phase C),
+# +socket,connect,sendto,recvfrom,getsockopt,setsockopt,getsockname,
+# getpeername (2026-08-23 v0.2 networking),
+# +chmod,close_range,copy_file_range,fadvise64,fstatfs,lgetxattr,link,
+# listxattr,rename,statfs,statx,symlink,umask,uname,unlinkat
+# (2026-08-23 native toolchain variants).
 EXPECTED_ALLOWLIST = [
-    "access", "arch_prctl", "brk", "chdir", "close", "dup2", "epoll_create1",
-    "execve", "exit_group", "fcntl", "fstat", "futex", "getcwd",
-    "getdents64", "getegid", "geteuid", "getgid", "getpid", "getppid",
-    "getrandom", "gettid", "getuid", "ioctl", "lseek", "mkdir", "mmap",
-    "mprotect", "munmap", "newfstatat", "openat", "pipe2", "poll",
-    "pread64", "prlimit64", "read", "readlink", "rseq", "rt_sigaction",
-    "rt_sigprocmask", "rt_sigreturn", "set_robust_list", "set_tid_address",
-    "unlink", "vfork", "wait4", "write",
+    "access", "arch_prctl", "brk", "chdir", "chmod", "close",
+    "close_range", "connect", "copy_file_range", "dup2",
+    "epoll_create1", "execve", "exit_group", "fadvise64", "fcntl",
+    "fstat", "fstatfs", "futex", "getcwd", "getdents64", "getegid",
+    "geteuid", "getgid", "getpeername", "getpid", "getppid",
+    "getrandom", "getsockname", "getsockopt", "gettid", "getuid",
+    "ioctl", "lgetxattr", "link", "listxattr", "lseek", "mkdir",
+    "mmap", "mprotect", "munmap", "newfstatat", "openat", "pipe2",
+    "poll", "pread64", "prlimit64", "read", "readlink", "recvfrom",
+    "rename", "rseq", "rt_sigaction", "rt_sigprocmask",
+    "rt_sigreturn", "sendto", "set_robust_list", "set_tid_address",
+    "setsockopt", "socket", "statfs", "statx", "symlink", "umask",
+    "uname", "unlink", "unlinkat", "vfork", "wait4", "write",
 ]
 
 STATUS_FILTERED = (
@@ -144,12 +153,12 @@ class SeccompHostTests(unittest.TestCase):
 
     def test_allowlist_loaded_from_artifact(self):
         allow, numbers = sc_mod.load_allowlist()
-        self.assertEqual(len(allow), 46)
-        self.assertEqual(len(set(allow)), 46, "allowlist must be unique")
+        self.assertEqual(len(allow), 69)
+        self.assertEqual(len(set(allow)), 69, "allowlist must be unique")
         self.assertEqual(allow, sorted(allow), "allowlist must be sorted")
 
     def test_allowlist_not_silently_expanded(self):
-        # Pins the exact 46-syscall set - NO UNDOCUMENTED SYSCALL
+        # Pins the exact 69-syscall set - NO UNDOCUMENTED SYSCALL
         # EXPANSION (policy.md section 5). A change here requires the
         # full derivation process.
         allow, _ = sc_mod.load_allowlist()
@@ -171,7 +180,7 @@ class SeccompHostTests(unittest.TestCase):
         # mismatch), then the JEQ allow chain, default RET_ERRNO|EPERM
         # BEFORE the trailing RET ALLOW (policy.md section 1).
         prog = sc_mod.build_program(EXPECTED_ALLOWLIST)
-        self.assertEqual(len(prog), 4 + 46 + 2)
+        self.assertEqual(len(prog), 4 + 69 + 2)
         self.assertEqual(prog[0], (0x20, 0, 0, sc_mod._OFF_ARCH))       # LD arch
         self.assertEqual(prog[1], (0x15, 1, 0, sc_mod.AUDIT_ARCH_X86_64))  # JEQ arch
         self.assertEqual(prog[2], (0x06, 0, 0, sc_mod.SECCOMP_RET_KILL_PROCESS))
@@ -507,7 +516,7 @@ class SeccompProbeTests(unittest.TestCase):
         cfg = RuntimeConfig.from_dict(valid_config(src))
         check = setup._seccomp_probe_impl(cfg)
         self.assertTrue(check.ok, check.reason)
-        self.assertIn("46-syscall default-deny", check.reason)
+        self.assertIn("69-syscall default-deny", check.reason)
         self.assertIn("EPERM", check.reason)
 
     @skip_unless_linux
