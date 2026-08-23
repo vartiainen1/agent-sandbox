@@ -150,27 +150,67 @@ def is_blocked_ip(ip: str) -> str | None:
 _PRIVATE_BLOCK_REASON = "private range destination denied (requires allow_private)"
 
 
+_HTTP_VERSION_RE = re.compile(r"^HTTP/\d+(\.\d+)?$")
+
+
 def parse_connect_request(line: str) -> tuple[str, int] | None:
     """Parse one CONNECT request line. Returns ``(host, port)`` or None
-    (malformed -> fail closed). The verb must be exactly ``CONNECT`` and
-    there must be exactly two arguments: a host and a decimal port."""
+    (malformed -> fail closed).
+
+    Two wire forms are accepted (the second is the STANDARD HTTP CONNECT
+    form, which lets stock clients - pip/curl/requests with a proxy URL -
+    use the validating proxy unchanged):
+
+    - ``CONNECT <host> <port>``            (the v0.2 Step 3 native form)
+    - ``CONNECT <host>:<port> [HTTP/1.1]`` (standard HTTP CONNECT)
+
+    The host must pass ``validate_host`` (a hostname or strict IPv4
+    literal) and the port must be 1..65535. Anything else - wrong verb,
+    extra tokens, a non-decimal port, an absent port - is None (fail
+    closed)."""
     if not isinstance(line, str):
         return None
     stripped = line.strip()
     if len(stripped) > _MAX_REQUEST_LINE:
         return None
     parts = stripped.split()
-    if len(parts) != 3 or parts[0] != _REQUEST_VERB:
+    if not parts or parts[0] != _REQUEST_VERB:
         return None
-    host, port_text = parts[1], parts[2]
+    host = None
+    port_text = None
+    if len(parts) == 2:
+        # CONNECT <host>:<port>
+        host, port_text = _split_target(parts[1])
+    elif len(parts) == 3:
+        # CONNECT <host> <port>            (native form)
+        # CONNECT <host>:<port> HTTP/1.x   (standard HTTP CONNECT -
+        #   stock clients send exactly this; note it is THREE tokens)
+        a, b = parts[1], parts[2]
+        if b.isdigit() and validate_host(a):
+            host, port_text = a, b
+        elif _HTTP_VERSION_RE.match(b):
+            host, port_text = _split_target(a)
+    # else: four-or-more tokens, wrong verb -> rejected below.
+    if host is None:
+        return None
     if not validate_host(host):
         return None
-    if not port_text.isdigit():
+    if port_text is None or not port_text.isdigit():
         return None
     port = int(port_text)
     if not 1 <= port <= 65535:
         return None
     return host, port
+
+
+def _split_target(target: str) -> tuple[str | None, str | None]:
+    """Split a ``host:port`` target. Returns ``(host, port_text)`` or
+    ``(None, None)`` for anything that is not exactly one colon (an IPv6
+    literal or a bare host is rejected - the v0.2 proxy is
+    IPv4/hostname-only)."""
+    if target.count(":") != 1:
+        return None, None
+    return target.rsplit(":", 1)
 
 
 def _hosts_match(a: str, b: str) -> bool:
@@ -393,13 +433,14 @@ def _handle(client: socket.socket, allowlist) -> None:
     try:
         line = _read_request_line(client)
         parsed = parse_connect_request(line) if line else None
+        http = _request_is_http(line)
         if parsed is None:
-            _deny(client, "malformed CONNECT request")
+            _deny(client, "malformed CONNECT request", http=http)
             return
         host, port = parsed
         allowed, reason, target_ip = check_destination(host, port, allowlist)
         if not allowed:
-            _deny(client, reason)
+            _deny(client, reason, http=http)
             return
         upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -407,12 +448,19 @@ def _handle(client: socket.socket, allowlist) -> None:
             upstream.connect((target_ip, port))
         except OSError as e:
             upstream.close()
-            _deny(client, f"upstream connection failed: {e}")
+            _deny(client, f"upstream connection failed: {e}", http=http)
             return
         client.settimeout(None)
         upstream.settimeout(None)
         try:
-            client.sendall(b"OK\n")
+            # Reply in the client's own protocol: stock HTTP CONNECT
+            # clients (pip/curl/requests) parse the proxy's response as
+            # an HTTP status line; the native v0.2 Step 3 clients expect
+            # the bare ``OK`` line.
+            if http:
+                client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            else:
+                client.sendall(b"OK\n")
         except OSError:
             client.close()
             upstream.close()
@@ -446,10 +494,32 @@ def _read_request_line(client: socket.socket) -> str:
         return ""
 
 
-def _deny(client: socket.socket, reason: str) -> None:
-    """Fail-closed reply: a deterministic DENIED line, then close."""
+def _request_is_http(line: str) -> bool:
+    """True when the request line is the standard HTTP CONNECT form
+    (``CONNECT host:port HTTP/1.x`` - the client parses the proxy reply
+    as HTTP). The native v0.2 Step 3 form (``CONNECT host port``)
+    expects the bare ``OK``/``DENIED`` lines."""
+    if not isinstance(line, str):
+        return False
+    parts = line.strip().split()
+    return (len(parts) == 3
+            and parts[1].count(":") == 1
+            and _HTTP_VERSION_RE.match(parts[2]) is not None)
+
+
+def _deny(client: socket.socket, reason: str, http: bool = False) -> None:
+    """Fail-closed reply in the client's own protocol (HTTP status line
+    for HTTP CONNECT clients, bare DENIED line for the native clients),
+    then close."""
     try:
-        client.sendall(f"DENIED {reason}\n".encode("ascii", errors="replace"))
+        if http:
+            body = f"{reason}\n".encode("ascii", errors="replace")
+            client.sendall(
+                f"HTTP/1.1 403 Forbidden\r\nContent-Length: "
+                f"{len(body)}\r\n\r\n".encode("ascii") + body)
+        else:
+            client.sendall(
+                f"DENIED {reason}\n".encode("ascii", errors="replace"))
     except OSError:
         pass
     try:

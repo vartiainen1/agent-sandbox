@@ -50,6 +50,14 @@ ENTRY_BINARIES = (
     "/bin/sh",          # merged-usr -> /usr/bin/dash
 )
 COREUTILS_PACKAGE = "coreutils"
+# Phase 10 (v0.2 Step 4): the curated dependency installer. python3-pip
+# on Debian/Ubuntu is self-contained: pip/_vendor carries its full
+# dependency closure (requests/urllib3/certifi/idna/packaging/... incl.
+# the CA bundle), so copying the package's own files is sufficient - no
+# system certifi/urllib3/requests packages are needed (verified natively,
+# Debian 13 / pip 25.1.1, 2026-08-23). The package must be installed on
+# the build host; the build fails closed otherwise.
+PIP_PACKAGE = "python3-pip"
 PYTHON_STDLIB_DIRS = (
     "/usr/lib/python3.12",
 )
@@ -153,6 +161,25 @@ def _coreutils_files() -> list[str]:
     return files
 
 
+def _pip_files() -> list[str]:
+    """Every file owned by the python3-pip package (Phase 10 curated
+    dependency installer). Dirs are copied whole (the pip/_vendor tree),
+    symlinks recreated, plain files copied. The /usr/bin/pip* console
+    scripts are Python shebang scripts - their interpreter (python3) is
+    already an entry binary, so no extra ldd closure is needed."""
+    out = _run(["dpkg", "-L", PIP_PACKAGE])
+    files = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("/usr/bin/") or line.startswith("/usr/lib/"):
+            files.append(line)
+    if not files:
+        raise BuildError(
+            f"no files found for package {PIP_PACKAGE} - is python3-pip "
+            "installed on the build host? fail closed")
+    return files
+
+
 def _copy_real(src: str, out_root: str, manifest: list[str]) -> None:
     """Copy a real file/dir preserving its absolute path relative to ``/``
     under out_root (symlinks in the chain are recreated separately)."""
@@ -222,6 +249,17 @@ def build(out_root: str) -> None:
             _copy_symlink(p, out_root, manifest)
         elif os.path.isfile(p):
             real_binaries.append(p)
+
+    # 3b. Phase 10 curated dependency installer (python3-pip): the package
+    #     tree incl. pip/_vendor (self-contained) + the pip3 console
+    #     scripts. Copied directly - no ldd closure (Python scripts).
+    for p in _pip_files():
+        if os.path.islink(p):
+            _copy_symlink(p, out_root, manifest)
+        elif os.path.isdir(p):
+            _copy_tree(p, out_root, manifest)
+        else:
+            _copy_real(p, out_root, manifest)
 
     # 4. Copy every real binary + its ldd closure (symlink chains and
     #    real files: links are recreated as links, files copied).

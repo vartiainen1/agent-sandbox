@@ -16,6 +16,13 @@ filesystem:
 
 - entry binaries: `python3` (+ its `python3.12` symlink chain), `git`,
   `dash`/`sh`, and the **coreutils package** binary set;
+- **python3-pip** (Phase 10 curated dependency installer, v0.2 Step 4):
+  the package's own files incl. `pip/_vendor` (self-contained -
+  requests/urllib3/certifi/CA bundle vendored, verified natively on
+  Debian 13 / pip 25.1.1) and the `pip3` console scripts, so
+  `pip install --proxy http://10.255.254.0:8080 ...` runs through the
+  validating proxy inside the sandbox. The build fails closed if
+  `python3-pip` is not installed on the build host;
 - each binary's **ldd closure** (glibc + every NEEDED shared object +
   the dynamic loader), copied to their real relative paths;
 - the **python stdlib** (`/usr/lib/python3.12/`) and the **git-core**
@@ -44,7 +51,8 @@ python3 tools/toolchain/build_toolchain.py --out /opt/agent-sandbox-toolchain
 ```
 
 Requires a Debian/Ubuntu-family host with `dpkg`, `ldd`, and the
-packages `python3`, `python3.12`, `coreutils`, `git`, `dash` installed.
+packages `python3`, `python3.12`, `coreutils`, `git`, `dash`,
+**`python3-pip`** (Phase 10) installed.
 The build is deterministic given the same source packages (files are
 copied verbatim; the MANIFEST is the record). It is fail-closed: any
 unresolvable binary or dependency aborts — never a partial artifact.

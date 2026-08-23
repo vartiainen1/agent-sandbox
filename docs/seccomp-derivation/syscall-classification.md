@@ -15,7 +15,7 @@ Legend:
 
 ---
 
-## 1. Allowed syscalls (69)
+## 1. Allowed syscalls (70)
 
 ### 1.1 Process lifecycle and creation
 
@@ -141,6 +141,7 @@ build that uses additional syscalls.
 | `copy_file_range` | 1 | coreutils `cp` (kernel-space file copy) | No | `cp` fails | Copies data between two fds within the process; no cross-mount or cross-namespace copy | ALLOW |
 | `fadvise64` | 1 | glibc buffered I/O (advisory hint) | No | glibc I/O errors | Advisory-only; kernel may ignore entirely; no data or permission change | ALLOW |
 | `fstatfs` | 1 | coreutils filesystem stats | No | `stat`/`df`/`ls -la` fail | Read-only metadata query | ALLOW |
+| `fsync` | 1 | Phase 10 dependency-installation workflow (pip `adjacent_tmp_file` — `os.fsync` on the downloaded wheel before the atomic rename) | No | pip install aborts with `PermissionError` (verified under the real filter: 69-syscall policy FAILS, 70-syscall policy INSTALLS) | Durability-only: flushes an fd the workload already holds to stable storage; no privilege, capability, namespace, network, or path effect. The ONLY syscall pip genuinely requires — bind/clock_nanosleep/mremap/readlinkat/rmdir were all proven tolerated (EPERM) and stay denied | ALLOW |
 | `lgetxattr` | 1 | coreutils `ls -la` (extended attribute listing) | No | `ls -la` display incomplete | Read-only xattr query; 890 calls from `ls -la /tmp` | ALLOW |
 | `link` | 1 | git (hard-linked objects in object store) | No | `git add` / object storage fail | Hard links confined to mount namespace; cannot link across mount boundaries | ALLOW |
 | `listxattr` | 1 | coreutils `ls -la` (extended attribute enumeration) | No | `ls -la` display incomplete | Read-only xattr enumeration; 890 calls from `ls -la /tmp` | ALLOW |
@@ -159,15 +160,18 @@ against `include/uapi/asm-generic/unistd.h`.
 
 ---
 
-**Count: 69 ALLOW** (29 tier0 + 40 tier1; +8 networking syscalls added
+**Count: 70 ALLOW** (29 tier0 + 41 tier1; +8 networking syscalls added
 2026-08-23 per the change-control process in policy.md §5 for v0.2
 networking prerequisites; +15 toolchain-variant syscalls added 2026-08-23
-per the native Ubuntu 24.04 / kernel 6.8 trace). No syscall in the
-allowed set enables privilege escalation, namespace manipulation, or host
-process inspection. The networking syscalls enable loopback-only
-communication with the validating proxy; the network namespace and the
-proxy enforce all outbound destination restrictions. `ioctl`, `prlimit64`,
-and `openat` remain documented with their bounding layers.
+per the native Ubuntu 24.04 / kernel 6.8 trace; +fsync added 2026-08-23
+per the Phase 10 dependency-installation measurement - the single
+syscall pip genuinely requires, proven under a real default-deny EPERM
+filter). No syscall in the allowed set enables privilege escalation,
+namespace manipulation, or host process inspection. The networking
+syscalls enable proxy-only communication with the validating proxy; the
+network namespace and the proxy enforce all outbound destination
+restrictions. `ioctl`, `prlimit64`, and `openat` remain documented with
+their bounding layers.
 
 ---
 

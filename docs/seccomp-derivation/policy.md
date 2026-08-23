@@ -22,13 +22,13 @@ exercise (methodology + classification) · Implementation: Phase 1 step 13
 
 ## 2. The allowlist (Stage B — workload execution)
 
-69 syscalls (29 tier0 + 40 tier1), all derived and classified in
+70 syscalls (29 tier0 + 41 tier1), all derived and classified in
 `syscall-classification.md`:
 
     access arch_prctl brk chmod chdir close close_range connect
     copy_file_range dup2 epoll_create1 execve exit_group fadvise64
-    fcntl fstat fstatfs futex getcwd getdents64 getegid geteuid
-    getgid getpeername getpid getppid getrandom getsockname
+    fcntl fstat fstatfs fsync futex getcwd getdents64 getegid
+    geteuid getgid getpeername getpid getppid getrandom getsockname
     getsockopt gettid getuid ioctl lgetxattr link listxattr lseek
     mkdir mmap mprotect munmap newfstatat openat pipe2 poll pread64
     prlimit64 read readlink recvfrom rename rseq rt_sigaction
@@ -40,7 +40,7 @@ Machine-readable form (single source of truth):
 `tools/seccomp-derivation/allowlist.json`. The behavioral probe loads it;
 the regression gate (`check_trace_regression.py`) fails any observed
 syscall outside it; the unit suite (`test_derivation.py`) pins its
-integrity (69, sorted, unique, default action).
+integrity (70, sorted, unique, default action).
 
 ## 3. What is denied and why (summary)
 
@@ -191,17 +191,58 @@ The allowlist is a regression-protected security artifact
   `symlink`→`symlinkat`(36), `rename`→`renameat2`(276); `unlinkat` was
   already in the aarch64 allowlist.
 
+- **2026-08-23 — `+fsync` (tier1, 69 → 70; tier0=29, tier1=41). Phase 10
+  (v0.2 Step 4) dependency-installation workflow.** Native measurement
+  of `pip install` (networked through the validating CONNECT proxy,
+  Debian 13 container, Python 3.11, pip 24.x/25.x, strace 6.13, WSL2
+  kernel 6.18) under the REAL 70-syscall filter (the project's own
+  `build_program` + `install_filter`, not LD_PRELOAD) proved exactly one
+  syscall is genuinely required beyond the 69 baseline: `fsync` — pip's
+  `adjacent_tmp_file` (`pip/_internal/utils/filesystem.py`) calls
+  `os.fsync` on the downloaded wheel before the atomic rename; the
+  install aborts with `PermissionError` when fsync is EPERM'd (verified:
+  POLICY=69 FAILED, POLICY=70 INSTALLED). The other five candidates in
+  the raw trace — `bind` (urllib3 IPv6-availability probe,
+  `connection.py:139`), `clock_nanosleep` (asyncio loop sleep),
+  `mremap` (glibc malloc growth), `readlinkat` (dynamic-loader
+  `/proc/self/exe` resolution), `rmdir` (pip temp-dir cleanup) — are
+  all attempted and EPERM'd under the real filter and pip continues
+  (install succeeds with all five denied; rmdir leaves documented
+  temp-dir warnings). `clone`/`clone3` are NOT used by pip (thread
+  count 0 — pip uses vfork/posix_spawn) and remain denied. Security
+  impact: fsync is durability-only (flush an fd the workload already
+  holds); no privilege, capability, namespace, network, or filesystem-
+  boundary effect; the socket-domain argument filter is unchanged.
+  Evidence: `trace-results.json` t1_pip_install (successful surface
+  under the real filter, 56 syscalls, all inside the 70 allowlist).
+  aarch64: fsync = 82 (asm-generic), 66 → 67.
+
+- **2026-08-23 — x86_64 number correction: `getsockname`/`getpeername`
+  (no count change).** The x86_64 syscall numbers in the artifact,
+  `seccomp.py::_X86_64` and `probe_policy.py::SYS` were wrong
+  (getsockname=50, getpeername=51); the real x86_64 ABI is
+  getsockname=51, getpeername=52 (50=listen — which stays denied). The
+  wrong numbers made `getpeername` ALWAYS EPERM in the real sandbox
+  (latent since Step 1; surfaced by the Phase 10 pip CONNECT tunnel,
+  which calls getpeername). Fail-closed direction (denied more than
+  intended) — no boundary weakened. Regression test:
+  `test_seccomp.py::test_x86_64_socket_syscall_numbers`.
+
 ## 6. Known limitations (documented, not hidden)
 
 - CPython `threading` / thread-based `multiprocessing` are unavailable
   (no `clone`). Re-derive when threads enter the required surface.
-- v0.2 networking syscalls (socket, connect, etc.) are now allowed, but
-  the network namespace remains deny-by-construction in deny mode and
-  allowlist mode currently only plumbs a veth pair to the host side —
-  the validating proxy and host-side iptables/nftables destination
-  enforcement are NOT implemented yet (v0.2 Step 2 substeps, outstanding).
-  The `socket` syscall is argument-filtered to AF_INET/AF_INET6 only
-  (see §3) so no Unix/netlink/packet socket can be created even in
+- v0.2 networking: `socket`/`connect`/`sendto`/`recvfrom`/`getsockopt`/
+  `setsockopt`/`getsockname`/`getpeername` are allowed, the network
+  namespace is deny-by-construction in deny mode, and in allowlist mode
+  the workload's ONLY path out is the host-side validating proxy (v0.2
+  Step 3: destination allowlist + SSRF gate + host firewall; direct host
+  access is DROPped). Phase 10 (v0.2 Step 4) adds the curated
+  dependency-installation workflow: `pip install --proxy
+  http://10.255.254.0:8080 ...` (the toolchain includes python3-pip;
+  `fsync` is the single syscall the workflow added). The `socket`
+  syscall is argument-filtered to AF_INET/AF_INET6 only (see §3) so no
+  Unix/netlink/packet socket can be created even in
   allowlist mode; general outbound networking is not yet possible.
 - x86_64/glibc-specific; other architectures must re-derive.
 - `ioctl` remains broad; bounded by minimal `/dev` and dropped

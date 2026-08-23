@@ -48,7 +48,7 @@ capabilities, including inside its own user namespace (the Step 5
 lo-toggle residual is resolved here: CAP_NET_ADMIN is gone). This
 happens AFTER no_new_privs (mandated order) and before the workload fn.
 
-Step 8 (seccomp, S-011, ADR-008): the derived 69-syscall default-deny
+Step 8 (seccomp, S-011, ADR-008): the derived 70-syscall default-deny
 filter (allowlist.json - the regression-protected artifact) is built
 host-side in child A BEFORE entering the boundary (the artifact is not
 reachable inside the pivoted rootfs), then installed in PID 1 as the
@@ -414,6 +414,19 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             os.dup2(out_w, 1)
             os.dup2(out_w, 2)
             os.close(out_w)
+            # Rebind Python's sys.stdout/sys.stderr to the new fd 1/2.
+            # os.dup2 redirects the RAW fds, but if the supervisor was
+            # launched under a harness that wraps sys.stdout (e.g.
+            # pytest's fd capture replaces it with an object whose
+            # fileno() is a HIGH fd), the workload's print() would write
+            # through the inherited object to the harness's capture
+            # instead of the sandbox output pipe - run.output would come
+            # back empty. Rebinding makes output capture
+            # harness-independent (2026-08-23, pytest 9 fd capture).
+            sys.stdout = os.fdopen(1, "w", encoding="utf-8",
+                                   errors="replace", closefd=False)
+            sys.stderr = os.fdopen(2, "w", encoding="utf-8",
+                                   errors="replace", closefd=False)
             # Child B inherits ctl_w from child A (child A closed ctl_r
             # BEFORE forking grand, so ctl_r was never inherited here).
             os.close(ctl_w)
@@ -507,7 +520,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 # verified BEFORE the workload fn. Step 7: capability
                 # reduction (full bounding-set drop + cleared sets) after
                 # no_new_privs, verified by read-back. Step 8: the derived
-                # 69-syscall default-deny seccomp filter is installed LAST
+                # 70-syscall default-deny seccomp filter is installed LAST
                 # and verified (Seccomp=2 read-back + socket->EPERM spot
                 # check). The workload cannot execute on an unverified
                 # privilege/syscall state (fail closed).
@@ -545,7 +558,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 # control-socket path may be reachable, no
                 # socket/credential env variable may have survived, and
                 # Unix-socket creation must be DENIED by the installed
-                # filter (socket class not in the 69-syscall allowlist).
+                # filter (socket class not in the 70-syscall allowlist).
                 # Any exposure refuses before the workload fn.
                 if fs_state is not None:
                     cred_mod.verify_credential_isolation(
@@ -1223,7 +1236,7 @@ def _privileges_guard(config) -> StageCheck:
 
 
 def seccomp_probe(config) -> StageCheck:
-    """Real-path probe of the SECCOMP mechanism (the derived 69-syscall
+    """Real-path probe of the SECCOMP mechanism (the derived 70-syscall
     default-deny filter built host-side, installed in PID 1 after
     no_new_privs + capability reduction, kernel-state read-back + socket
     EPERM spot check), run in a forked child so the supervisor never
@@ -1276,7 +1289,7 @@ def _seccomp_probe_impl(config) -> StageCheck:
     if msg == "OK":
         return StageCheck(
             ok=True,
-            reason="derived 69-syscall default-deny seccomp filter built "
+            reason="derived 70-syscall default-deny seccomp filter built "
                    "from allowlist.json, installed LAST in PID 1 after "
                    "no_new_privs + capability reduction, kernel-state "
                    "read-back verified (Seccomp mode = SECCOMP_MODE_FILTER, "

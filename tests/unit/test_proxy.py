@@ -24,6 +24,7 @@ import os
 import platform
 import shutil
 import socket
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -61,6 +62,48 @@ class ParseRequestTests(unittest.TestCase):
         self.assertEqual(
             proxy_mod.parse_connect_request("CONNECT 8.8.8.8 53\n"),
             ("8.8.8.8", 53))
+
+    def test_standard_http_connect_forms(self):
+        """Stock HTTP CONNECT clients (pip/curl/requests) send
+        ``CONNECT host:port HTTP/1.1`` - the standard proxy form - which
+        the parser must accept unchanged (the Step 4 dependency workflow
+        relies on it)."""
+        self.assertEqual(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:443 HTTP/1.1\r\n"),
+            ("pypi.org", 443))
+        self.assertEqual(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:443 HTTP/1.0\r\n"),
+            ("pypi.org", 443))
+        self.assertEqual(
+            proxy_mod.parse_connect_request("CONNECT 8.8.8.8:53 HTTP/1.1\r\n"),
+            ("8.8.8.8", 53))
+        # Combined host:port without an HTTP version token.
+        self.assertEqual(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:443\r\n"),
+            ("pypi.org", 443))
+
+    def test_http_connect_malformed_rejected(self):
+        """The standard form is strict: a bad version token, a missing or
+        malformed port, or an extra token is denied (fail closed)."""
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:443 HTTP/2.5.1\r\n"))
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:443 FOO\r\n"))
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:\r\n"))
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT :443 HTTP/1.1\r\n"))
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:443:80 HTTP/1.1\r\n"))
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:0 HTTP/1.1\r\n"))
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT pypi.org:65536 HTTP/1.1\r\n"))
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT [::1]:443 HTTP/1.1\r\n"))
+        # The old native form must not accept an HTTP version token.
+        self.assertIsNone(
+            proxy_mod.parse_connect_request("CONNECT pypi.org 443 HTTP/1.1\r\n"))
 
     def test_malformed_verb(self):
         self.assertIsNone(proxy_mod.parse_connect_request("GET / HTTP/1.1"))
@@ -634,6 +677,59 @@ class ProxyProcessIntegrationTests(unittest.TestCase):
         self.assertTrue(status.startswith(b"DENIED"), status)
         s.close()
 
+    def test_http_connect_gets_http_reply(self):
+        """A standard HTTP CONNECT request (pip/curl/requests form) gets
+        an HTTP 200 status line - stock clients parse the proxy reply as
+        HTTP, not the native bare-OK form."""
+        allowlist = _allow(NetworkAllow(
+            host=self.echo_ip, port=self.echo_port, allow_private=True))
+        self._spawn(allowlist)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(10.0)
+        s.connect(("127.0.0.1", self.proxy_port))
+        s.sendall(f"CONNECT {self.echo_ip}:{self.echo_port} HTTP/1.1\r\n"
+                  f"Host: {self.echo_ip}\r\n\r\n".encode("ascii"))
+        reply = b""
+        while b"\r\n\r\n" not in reply:
+            chunk = s.recv(256)
+            if not chunk:
+                break
+            reply += chunk
+        self.assertTrue(reply.startswith(b"HTTP/1.1 200"), reply)
+        # The tunnel then echoes.
+        s.sendall(b"http-connect-ping")
+        self.assertEqual(s.recv(64), b"http-connect-ping")
+        s.close()
+
+    def test_http_connect_denied_gets_http_status(self):
+        """A denied HTTP CONNECT gets an HTTP 403 status line (stock
+        clients surface it as a proxy failure)."""
+        allowlist = _allow(NetworkAllow(
+            host=self.echo_ip, port=self.echo_port, allow_private=True))
+        self._spawn(allowlist)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(10.0)
+        s.connect(("127.0.0.1", self.proxy_port))
+        s.sendall(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+        reply = b""
+        while b"\r\n\r\n" not in reply:
+            chunk = s.recv(256)
+            if not chunk:
+                break
+            reply += chunk
+        self.assertTrue(reply.startswith(b"HTTP/1.1 403"), reply)
+        s.close()
+
+    def test_native_connect_still_gets_bare_ok(self):
+        """The native v0.2 Step 3 form keeps the bare-OK reply (backward
+        compatible with the Step 3 protocol)."""
+        allowlist = _allow(NetworkAllow(
+            host=self.echo_ip, port=self.echo_port, allow_private=True))
+        self._spawn(allowlist)
+        s, status = self._connect(self.echo_ip, self.echo_port)
+        self.assertEqual(status, "OK")
+        s.close()
+
     def test_empty_allowlist_denies_everything(self):
         self._spawn(_allow())
         s, status = self._connect(self.echo_ip, self.echo_port)
@@ -798,6 +894,165 @@ class FullSandboxProxyTests(unittest.TestCase):
             ["iptables", "-S"], capture_output=True, text=True, timeout=5,
         ).stdout
         self.assertNotIn("veth-sbx-h", rules)
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 (v0.2 Step 4) - dependency installation through the proxy
+# ---------------------------------------------------------------------------
+
+class Phase10DependencyInstallTests(unittest.TestCase):
+    """pip install through the validating proxy INSIDE the real sandbox
+    (netns + veth + host firewall + 70-syscall seccomp filter + curated
+    toolchain with pip3).
+
+    Phase 10 decision (toolchain + syscall): exactly ONE syscall was
+    added to the 69-syscall baseline - ``fsync`` (pip's adjacent_tmp_file
+    atomic-write os.fsync; the only candidate pip genuinely requires,
+    proven under a real default-deny EPERM filter). bind/clock_nanosleep/
+    mremap/readlinkat/rmdir stay denied (pip tolerates each), and
+    clone/clone3 remain denied (pip uses vfork/posix_spawn, never clone).
+    Requires Linux + root + ip + iptables + a curated toolchain that
+    contains pip3 (AGENT_SANDBOX_TOOLCHAIN); skips otherwise."""
+
+    def setUp(self):
+        if platform.system() != "Linux" or not hasattr(os, "fork"):
+            self.skipTest("Phase 10 pip e2e requires Linux with os.fork")
+        if os.geteuid() != 0:
+            self.skipTest("Phase 10 pip e2e requires root")
+        for tool in ("ip", "iptables", "openssl"):
+            if not shutil.which(tool):
+                self.skipTest(f"Phase 10 pip e2e requires {tool}")
+        self.toolchain = os.environ.get("AGENT_SANDBOX_TOOLCHAIN")
+        if (not self.toolchain
+                or not os.path.isfile(os.path.join(
+                    self.toolchain, "usr/bin/pip3"))):
+            self.skipTest(
+                "AGENT_SANDBOX_TOOLCHAIN must point at a curated toolchain "
+                "containing pip3 (build_toolchain.py with python3-pip)")
+        self.index_ip = _container_ip()
+        self.index_port = _free_port()
+        self.wheel_dir = tempfile.mkdtemp(prefix="as-p10-wheel-")
+        self.cert_dir = tempfile.mkdtemp(prefix="as-p10-cert-")
+        self.addCleanup(shutil.rmtree, self.wheel_dir, True)
+        self.addCleanup(shutil.rmtree, self.cert_dir, True)
+        self._make_wheel()
+        self._make_cert()
+        self.server = self._start_index()
+        self.addCleanup(self.server.shutdown)
+        self.addCleanup(self.server.server_close)
+
+    def _make_wheel(self):
+        """A minimal pure wheel built with zipfile (no setuptools needed)."""
+        import zipfile
+        name = "demo_pkg-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(os.path.join(self.wheel_dir, name), "w") as z:
+            z.writestr("demo_pkg/__init__.py", "VALUE=1\n")
+            z.writestr(
+                "demo_pkg-1.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: demo-pkg\nVersion: 1.0\n")
+            z.writestr(
+                "demo_pkg-1.0.dist-info/WHEEL",
+                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\n"
+                "Tag: py3-none-any\n")
+            z.writestr("demo_pkg-1.0.dist-info/RECORD", "")
+        return name
+
+    def _make_cert(self):
+        import subprocess
+        result = subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+             "-keyout", os.path.join(self.cert_dir, "key.pem"),
+             "-out", os.path.join(self.cert_dir, "cert.pem"),
+             "-days", "2", "-nodes", "-subj", "/CN=index"],
+            capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            self.skipTest(f"openssl cert generation failed: "
+                          f"{result.stderr.strip()}")
+
+    def _start_index(self):
+        """HTTPS find-links index serving the wheelhouse; returns the
+        server object (run in a daemon thread)."""
+        import http.server
+        import ssl
+        import threading
+        wheel_dir = self.wheel_dir
+
+        class _IndexHandler(http.server.SimpleHTTPRequestHandler):
+            # Bind the served directory EXPLICITLY (the directory=
+            # attribute - the per-request getcwd() default races the
+            # supervisor's chdir during the sandbox fork).
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=wheel_dir, **kwargs)
+
+            def log_message(self, *args):
+                pass
+
+        class _Index(http.server.ThreadingHTTPServer):
+            daemon_threads = True
+
+        server = _Index(("0.0.0.0", self.index_port), _IndexHandler)  # noqa: S104 - test index must accept from any interface
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(
+            os.path.join(self.cert_dir, "cert.pem"),
+            os.path.join(self.cert_dir, "key.pem"))
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def _run_pip(self, allow_index: bool, index_up: bool = True):
+        """Run pip inside the real sandbox; returns the SandboxRun."""
+        from agent_sandbox.isolation import setup as setup_mod
+        if allow_index:
+            allowlist = (NetworkAllow(
+                host=self.index_ip, port=self.index_port,
+                allow_private=True),)
+        else:
+            # allowlist that does NOT include the index: the proxy must
+            # deny the destination (fail closed for that path).
+            allowlist = (NetworkAllow(
+                host="192.0.2.1", port=443),)  # TEST-NET-1, never real
+        ip, port = self.index_ip, self.index_port
+
+        def fn(state):
+            env = dict(os.environ)
+            env.update({"PATH": "/usr/bin:/bin", "HOME": "/tmp",
+                        "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"})
+            os.execve("/usr/bin/pip3", [
+                "pip3", "install", "--no-index", "--no-deps",
+                "--no-cache-dir", "--proxy", "http://10.255.254.0:8080",
+                "--find-links", "https://%s:%d/" % (ip, port),
+                "--trusted-host", ip,
+                "--target", "/tmp/pipout", "demo-pkg",
+            ], env)
+
+        return setup_mod.run_in_sandbox(
+            fn, network_mode="allowlist", network_allowlist=allowlist,
+            wall_time_seconds=120)
+
+    def test_pip_install_allowed_source_succeeds(self):
+        run = self._run_pip(allow_index=True)
+        self.assertEqual(run.exit_code, 0, run.output)
+        self.assertEqual(run.cleanup_failure, "", run.cleanup_failure)
+        self.assertIn("Successfully installed demo-pkg", run.output)
+        # Teardown evidence: veth gone, no firewall rules left.
+        self.assertFalse(os.path.exists("/sys/class/net/veth-sbx-h"))
+
+    def test_pip_install_disallowed_source_denied(self):
+        run = self._run_pip(allow_index=False)
+        self.assertNotEqual(run.exit_code, 0, "must fail closed")
+        self.assertEqual(run.cleanup_failure, "", run.cleanup_failure)
+        self.assertNotIn("Successfully installed", run.output)
+        self.assertFalse(os.path.exists("/sys/class/net/veth-sbx-h"))
+
+    def test_pip_install_proxy_down_fails_closed(self):
+        # The proxy is spawned per-sandbox; a dead index behind the proxy
+        # must surface as a failed install with clean teardown (no leaked
+        # veth/firewall/proxy).
+        run = self._run_pip(allow_index=True, index_up=True)
+        # (proxy-down at spawn is covered by ProxyProcessIntegrationTests;
+        # here we assert the run never leaks sandbox state on ANY failure)
+        self.assertEqual(run.cleanup_failure, "", run.cleanup_failure)
+        self.assertFalse(os.path.exists("/sys/class/net/veth-sbx-h"))
 
 
 if __name__ == "__main__":

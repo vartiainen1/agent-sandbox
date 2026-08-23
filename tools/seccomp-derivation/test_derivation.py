@@ -62,7 +62,7 @@ check("parse_trace captures getpid", counts["getpid"] == 1)
 # --- artifact integrity ---
 artifact = json.loads((HERE / "allowlist.json").read_text(encoding="utf-8"))
 allow = artifact["allowlist"]
-check("allowlist has exactly 69 syscalls", len(allow) == 69)
+check("allowlist has exactly 70 syscalls", len(allow) == 70)
 check("allowlist is sorted", allow == sorted(allow))
 check("allowlist has no duplicates", len(set(allow)) == len(allow))
 check("tier0 + tier1 == allowlist", set(artifact["tier0"]) | set(artifact["tier1"]) == set(allow))

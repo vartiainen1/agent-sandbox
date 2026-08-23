@@ -317,7 +317,9 @@ class NetworkBoundaryTests(unittest.TestCase):
                         s.close()
                 except OSError as e:
                     results[f"connect_{host}"] = f"errno:{e.errno}"
-            # bind/listen are not in the 69-syscall allowlist; the bind
+            # bind/listen are not in the 70-syscall allowlist (fsync was
+            # added for the Phase 10 dependency workflow; bind was proven
+            # tolerated under real seccomp and stays denied); the bind
             # attempt is killed by seccomp before the OSError can be
             # caught.  Verify this separately below.
             return json.dumps(results)

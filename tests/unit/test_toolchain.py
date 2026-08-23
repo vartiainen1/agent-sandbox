@@ -220,6 +220,15 @@ class ToolchainBuildIntegrityTests(unittest.TestCase):
             "lib64 must hold the dynamic loader (ld-linux-*)")
         self.assertTrue(os.path.isfile(os.path.join(out, "etc/passwd")))
         self.assertTrue(os.path.isfile(os.path.join(out, "MANIFEST")))
+        # Phase 10 (v0.2 Step 4): the curated dependency installer must
+        # be present (python3-pip incl. its self-contained pip/_vendor).
+        pip3 = os.path.join(out, "usr/bin/pip3")
+        self.assertTrue(os.path.islink(pip3) or os.path.isfile(pip3),
+                        "pip3 must be in the artifact (Phase 10 "
+                        "dependency installer)")
+        pip_pkg = os.path.join(out, "usr/lib/python3/dist-packages/pip")
+        self.assertTrue(os.path.isdir(pip_pkg),
+                        "pip package must be in the artifact")
 
 
 if __name__ == "__main__":

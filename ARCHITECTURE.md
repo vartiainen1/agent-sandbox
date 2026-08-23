@@ -369,10 +369,15 @@ Two layers, both enforced outside the workload and neither raisable by it
   workload cannot exec setuid/setgid binaries or gain file capabilities.
 - **seccomp** (S-011): BPF filter, default action EPERM (deny), with an
   explicit allowlist derived for the toolchain (Python, shell, git, build
-  tools) and finalized empirically in Phase 1 (ADR-008). Dangerous syscalls
-  (`mount`, `ptrace`, `unshare`, `setns`, `keyctl`, `bpf`, `clone` with
-  CLONE_NEW* flags, `chroot`, `pivot_root`, …) are denied in HARDENED mode.
-  Seccomp failure ⇒ refuse HARDENED execution.
+  tools, and — Phase 10 / v0.2 Step 4 — pip) and finalized empirically in
+  Phase 1 (ADR-008). The Phase 10 dependency-installation workflow added
+  exactly one syscall (`fsync` — pip's atomic-write durability; the only
+  candidate pip genuinely requires, proven under a real default-deny EPERM
+  filter; bind/clock_nanosleep/mremap/readlinkat/rmdir stay denied as
+  tolerated; clone/clone3 stay denied — pip uses vfork/posix_spawn).
+  Dangerous syscalls (`mount`, `ptrace`, `unshare`, `setns`, `keyctl`,
+  `bpf`, `clone` with CLONE_NEW* flags, `chroot`, `pivot_root`, …) are
+  denied in HARDENED mode. Seccomp failure ⇒ refuse HARDENED execution.
 
 ---
 

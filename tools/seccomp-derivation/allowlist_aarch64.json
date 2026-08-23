@@ -1,6 +1,6 @@
 {
   "artifact": "agent-sandbox HARDENED seccomp syscall allowlist (aarch64)",
-  "version": 2,
+  "version": 3,
   "arch": "aarch64",
   "derived": "2026-08-23",
   "derivation_docs": "docs/seccomp-derivation/ (methodology.md, syscall-classification.md)",
@@ -8,8 +8,8 @@
   "install_point": "after all Stage-A initialization, immediately before workload exec (never before no_new_privs)",
   "change_control": "docs/seccomp-derivation/policy.md section 5: NO UNDOCUMENTED SYSCALL EXPANSION.",
   "limitations": "aarch64 mapping derived from asm-generic/unistd.h (Linux kernel). Numbers are authoritative for 64-bit aarch64. Native aarch64 trace verification has NOT been performed. Some syscalls are name-mapped (chmod->fchmodat, link->linkat, symlink->symlinkat, rename->renameat2) because aarch64 has no legacy syscall equivalents.",
-  "parent_artifact": "allowlist.json (x86_64, 69 syscalls; +networking +toolchain 2026-08-23)",
-  "derivation_notes": "x86_64 arch_prctl (TLS segment register) removed — not applicable on aarch64. x86_64 vfork removed — glibc on aarch64 uses clone(CLONE_VM|SIGCHLD) internally. access->faccessat, dup2->dup3, mkdir->mkdirat, poll->ppoll, readlink->readlinkat, unlink->unlinkat — aarch64 has no legacy syscalls, glibc uses *at() variants. chmod->fchmodat, link->linkat, symlink->symlinkat, rename->renameat2 — same reason. Numbers from asm-generic/unistd.h, NOT from the x86_64 table.",
+  "parent_artifact": "allowlist.json (x86_64, 70 syscalls; +fsync Phase 10 2026-08-23)",
+  "derivation_notes": "x86_64 arch_prctl (TLS segment register) removed \u2014 not applicable on aarch64. x86_64 vfork removed \u2014 glibc on aarch64 uses clone(CLONE_VM|SIGCHLD) internally. access->faccessat, dup2->dup3, mkdir->mkdirat, poll->ppoll, readlink->readlinkat, unlink->unlinkat \u2014 aarch64 has no legacy syscalls, glibc uses *at() variants. chmod->fchmodat, link->linkat, symlink->symlinkat, rename->renameat2 \u2014 same reason. Numbers from asm-generic/unistd.h, NOT from the x86_64 table.",
   "changelog": [
     {
       "date": "2026-08-20",
@@ -32,6 +32,15 @@
       "reason": "Toolchain variants observed on native x86_64 Ubuntu 24.04 / kernel 6.8. Mapped to aarch64 asm-generic equivalents. unlinkat already in aarch64 allowlist (not re-added). Numbers verified against include/uapi/asm-generic/unistd.h.",
       "security_impact": "Same as x86_64: all tier1 filesystem/metadata operations confined to the mount namespace.",
       "evidence": "aarch64 numbers derived from kernel headers, NOT from native aarch64 trace (trace not yet performed)."
+    },
+    {
+      "date": "2026-08-23",
+      "syscall": "fsync",
+      "tier": 1,
+      "delta": "66 -> 67 (tier0=28, tier1=39)",
+      "reason": "Phase 10 (v0.2 Step 4) dependency-installation workflow: mirrors the x86_64 allowlist.json change (69 -> 70). pip's adjacent_tmp_file calls os.fsync before the atomic wheel rename; the install aborts when fsync is EPERM'd. aarch64 number 82 (asm-generic). bind/clock_nanosleep/mremap/readlinkat/rmdir stay denied - proven tolerated under real seccomp on x86_64; aarch64 requires native trace verification.",
+      "security_impact": "fsync is durability-only: no privilege, capability, namespace/network/filesystem-boundary escape. Socket-domain filtering unaffected. clone/clone3 remain denied (aarch64 glibc uses clone internally, not clone3, and clone is not allowlisted).",
+      "evidence": "x86_64 native real-seccomp test 2026-08-23; aarch64 number from asm-generic/unistd.h (fsync=82)."
     }
   ],
   "tier0": [
@@ -74,6 +83,7 @@
     "fadvise64",
     "fcntl",
     "fstatfs",
+    "fsync",
     "futex",
     "getdents64",
     "getpeername",
@@ -121,6 +131,7 @@
     "fcntl",
     "fstat",
     "fstatfs",
+    "fsync",
     "futex",
     "getcwd",
     "getdents64",
@@ -238,8 +249,9 @@
     "uname": 160,
     "unlinkat": 35,
     "wait4": 260,
-    "write": 64
+    "write": 64,
+    "fsync": 82
   },
-  "x86_64_count": 69,
-  "aarch64_count": 66
+  "x86_64_count": 70,
+  "aarch64_count": 67
 }

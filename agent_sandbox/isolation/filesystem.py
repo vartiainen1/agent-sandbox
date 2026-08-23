@@ -12,7 +12,9 @@ before privileges/seccomp):
       1. make the whole mount namespace private  (no propagation either way)
       2. bind the rootfs tree onto itself         (it becomes a mount point)
       3. make the rootfs mount private            (belt-and-braces)
-      4. mount a size-limited tmpfs at /tmp
+      4. mount a size-limited tmpfs at /tmp (NOSUID|NODEV - the
+         writable scratch dir carries no setuid bit / device node;
+         2026-08-23 Phase 10)
       5. provision the minimal /dev (ADR-015): mount a small sandbox-
          private tmpfs at /dev, then bind-mount EXACTLY the six host
          device nodes (null/zero/full/random/urandom/tty), each source
@@ -183,6 +185,18 @@ def _read_mountinfo() -> list[dict]:
     return out
 
 
+def _mount_flags_for(mount_point: str) -> str:
+    """The mount_options (per-mount flags) of ``mount_point`` from
+    /proc/self/mountinfo (inside the sandbox, after the procfs mount).
+    Raises NamespaceSetupError if the mount is absent - fail closed."""
+    for info in _read_mountinfo():
+        if info["mount_point"] == mount_point:
+            return info["mount_options"]
+    raise NamespaceSetupError(
+        f"mount {mount_point!r} not found in mountinfo - mount "
+        "verification impossible, fail closed")
+
+
 def prepare_rootfs(rootfs: RootfsState, disk_mb: int,
                    toolchain: str | None = None) -> None:
     """Filesystem stage BEFORE the pivot (runs in the setup child, in the
@@ -207,11 +221,20 @@ def prepare_rootfs(rootfs: RootfsState, disk_mb: int,
     syscalls.mount(root_b, root_b, b"", syscalls.MS_BIND | syscalls.MS_REC, b"")
     # 3. The rootfs mount itself is private.
     syscalls.mount(b"none", root_b, b"", syscalls.MS_REC | syscalls.MS_PRIVATE, b"")
-    # 4. Size-limited tmpfs at /tmp (kernel-enforced at mount time).
+    # 4. Size-limited tmpfs at /tmp (kernel-enforced at mount time),
+    #    mounted NOSUID|NODEV (defense-in-depth, consistent with the
+    #    /dev and /proc mounts): a workload-owned setuid bit is inert
+    #    (no_new_privs is already set) but the sandbox does not carry it
+    #    at all, and no device node can appear in the writable scratch
+    #    dir. NOT noexec - /tmp stays executable for legitimate
+    #    workloads (Phase 10: pip's install target, build artifacts).
+    #    2026-08-23 (Phase 10): was flags=0; the T-048 adversarial
+    #    setuid-containment assertion surfaced the gap on tmpfs.
     if disk_mb < 1:
         raise NamespaceSetupError(
             f"tmpfs size {disk_mb}m is invalid - fail closed")
-    syscalls.mount(b"tmpfs", layout.tmp.encode(), b"tmpfs", 0,
+    syscalls.mount(b"tmpfs", layout.tmp.encode(), b"tmpfs",
+                   syscalls.MS_NOSUID | syscalls.MS_NODEV,
                    f"size={disk_mb}m".encode())
 
     # 5. Minimal /dev (ADR-015): sandbox-private tmpfs + exactly the six
@@ -434,6 +457,18 @@ def _verify_root_boundary(rootfs: RootfsState,
     tmp_dev = os.stat("/tmp").st_dev
     if tmp_dev == os.stat("/").st_dev:
         problems.append("/tmp is not a separate tmpfs device")
+    # /tmp mount flags: NOSUID|NODEV (defense-in-depth - the writable
+    # scratch dir carries no setuid bit and can hold no device node;
+    # 2026-08-23 Phase 10, T-048 setuid-containment assertion).
+    try:
+        tmp_mount_flags = _mount_flags_for("/tmp")
+    except NamespaceSetupError as e:
+        problems.append(str(e))
+    else:
+        if "nosuid" not in tmp_mount_flags or "nodev" not in tmp_mount_flags:
+            problems.append(
+                f"/tmp must be mounted nosuid,nodev (got "
+                f"{tmp_mount_flags or 'no flags'})")
 
     # /dev: the sandbox-private tmpfs with EXACTLY the six nodes (type,
     # major/minor, mode). "Node exists" is not the verification -

@@ -254,8 +254,8 @@ and enforced? Is the allowlist minimal and complete?
 **Relevant source files:**
 - `agent_sandbox/isolation/seccomp.py` — filter installation
 - `agent_sandbox/isolation/syscalls.py` — syscall constants
-- `tools/seccomp-derivation/allowlist.json` — the 69-syscall allowlist
-- `tools/seccomp-derivation/allowlist_aarch64.json` — aarch64 allowlist (66 syscalls)
+- `tools/seccomp-derivation/allowlist.json` — the 70-syscall allowlist
+- `tools/seccomp-derivation/allowlist_aarch64.json` — aarch64 allowlist (67 syscalls)
 - `tools/seccomp-derivation/check_trace_regression.py` — regression gate
 - `tools/seccomp-derivation/probe_policy.py` — behavioral probe
 - `tools/seccomp-derivation/trace_workloads.py` — workload tracing
@@ -286,8 +286,8 @@ and enforced? Is the allowlist minimal and complete?
 - Confirm the filter inherits to child processes via fork/exec
 - Confirm the default action is EPERM (deny)
 - Confirm ptrace/mount/chroot/unshare/clone/socketpair are denied, and that `socket` is argument-filtered to AF_INET/AF_INET6 (all other domains EPERM — v0.2 Step 2)
-- Review the 69-syscall allowlist for completeness and minimality
-- Review the aarch64 allowlist (66 syscalls) — note: filter installation/enforcement is NOT VERIFIED on aarch64
+- Review the 70-syscall allowlist for completeness and minimality (69 baseline + fsync — the single Phase 10 dependency-installation syscall; see policy.md §5 change record for the necessity evidence)
+- Review the aarch64 allowlist (67 syscalls) — note: filter installation/enforcement is NOT VERIFIED on aarch64
 
 ---
 

@@ -41,19 +41,25 @@ skip_unless_linux = unittest.skipUnless(
     LINUX, "real seccomp operations require Linux with os.fork "
            "(non-Linux fail-closed behavior is covered by test_skeleton.py)")
 
-# The 69-syscall derived allowlist (pinned - NO UNDOCUMENTED EXPANSION;
+# The 70-syscall derived allowlist (pinned - NO UNDOCUMENTED EXPANSION;
 # policy.md section 5). Any change must go through the derivation process.
-# 69 = 29 tier0 + 40 tier1: +chdir (2026-08-22 Phase C),
+# 70 = 29 tier0 + 41 tier1: +chdir (2026-08-22 Phase C),
 # +socket,connect,sendto,recvfrom,getsockopt,setsockopt,getsockname,
 # getpeername (2026-08-23 v0.2 networking),
 # +chmod,close_range,copy_file_range,fadvise64,fstatfs,lgetxattr,link,
 # listxattr,rename,statfs,statx,symlink,umask,uname,unlinkat
-# (2026-08-23 native toolchain variants).
+# (2026-08-23 native toolchain variants),
+# +fsync (2026-08-23 Phase 10 dependency-installation workflow;
+# pip adjacent_tmp_file atomic-write durability - the only syscall of
+# the six observed pip candidates that is genuinely required; bind,
+# clock_nanosleep, mremap, readlinkat, rmdir stay denied, proven
+# tolerated under real seccomp).
 EXPECTED_ALLOWLIST = [
     "access", "arch_prctl", "brk", "chdir", "chmod", "close",
     "close_range", "connect", "copy_file_range", "dup2",
     "epoll_create1", "execve", "exit_group", "fadvise64", "fcntl",
-    "fstat", "fstatfs", "futex", "getcwd", "getdents64", "getegid",
+    "fstat", "fstatfs", "fsync", "futex", "getcwd", "getdents64",
+    "getegid",
     "geteuid", "getgid", "getpeername", "getpid", "getppid",
     "getrandom", "getsockname", "getsockopt", "gettid", "getuid",
     "ioctl", "lgetxattr", "link", "listxattr", "lseek", "mkdir",
@@ -153,12 +159,12 @@ class SeccompHostTests(unittest.TestCase):
 
     def test_allowlist_loaded_from_artifact(self):
         allow, numbers = sc_mod.load_allowlist()
-        self.assertEqual(len(allow), 69)
-        self.assertEqual(len(set(allow)), 69, "allowlist must be unique")
+        self.assertEqual(len(allow), 70)
+        self.assertEqual(len(set(allow)), 70, "allowlist must be unique")
         self.assertEqual(allow, sorted(allow), "allowlist must be sorted")
 
     def test_allowlist_not_silently_expanded(self):
-        # Pins the exact 69-syscall set - NO UNDOCUMENTED SYSCALL
+        # Pins the exact 70-syscall set - NO UNDOCUMENTED SYSCALL
         # EXPANSION (policy.md section 5). A change here requires the
         # full derivation process.
         allow, _ = sc_mod.load_allowlist()
@@ -175,6 +181,27 @@ class SeccompHostTests(unittest.TestCase):
         missing = [n for n in allow if n not in sc_mod._X86_64]
         self.assertEqual(missing, [])
 
+    def test_x86_64_socket_syscall_numbers(self):
+        # Regression (2026-08-23 Phase 10): getsockname/getpeername were
+        # mis-numbered (50/51); the real x86_64 ABI is getsockname=51,
+        # getpeername=52 (50=listen). The wrong numbers made getpeername
+        # ALWAYS EPERM in the real sandbox (latent since Step 1; surfaced
+        # by the pip CONNECT tunnel which calls getpeername). Both the
+        # runtime table and the artifact numbers must agree with the
+        # kernel (syscall_64.tbl / asm/unistd_64.h).
+        self.assertEqual(sc_mod._X86_64["socket"], 41)
+        self.assertEqual(sc_mod._X86_64["connect"], 42)
+        self.assertEqual(sc_mod._X86_64["getsockname"], 51)
+        self.assertEqual(sc_mod._X86_64["getpeername"], 52)
+        self.assertEqual(sc_mod._X86_64["setsockopt"], 54)
+        self.assertEqual(sc_mod._X86_64["getsockopt"], 55)
+        self.assertNotIn("listen", sc_mod._X86_64,
+                         "listen must stay denied (nr 50 is listen, "
+                         "never getsockname)")
+        allow, numbers = sc_mod.load_allowlist()
+        self.assertEqual(numbers["getsockname"], 51)
+        self.assertEqual(numbers["getpeername"], 52)
+
     def test_build_program_layout(self):
         # Deterministic default-deny layout with socket domain filtering:
         # arch guard first (KILL on mismatch), then the JEQ allow chain,
@@ -182,8 +209,8 @@ class SeccompHostTests(unittest.TestCase):
         # JEQ AF_INET6), default RET_ERRNO|EPERM, trailing RET ALLOW.
         # (policy.md section 1; v0.2 socket argument-level filtering.)
         prog = sc_mod.build_program(EXPECTED_ALLOWLIST)
-        # 4 (header) + 69 (JEQ chain) + 3 (socket sub-chain) + 1 (deny) + 1 (allow)
-        self.assertEqual(len(prog), 4 + 69 + 5)
+        # 4 (header) + 70 (JEQ chain) + 3 (socket sub-chain) + 1 (deny) + 1 (allow)
+        self.assertEqual(len(prog), 4 + 70 + 5)
         self.assertEqual(prog[0], (0x20, 0, 0, sc_mod._OFF_ARCH))       # LD arch
         self.assertEqual(prog[1], (0x15, 1, 0, sc_mod.AUDIT_ARCH_X86_64))  # JEQ arch
         self.assertEqual(prog[2], (0x06, 0, 0, sc_mod.SECCOMP_RET_KILL_PROCESS))
@@ -191,12 +218,12 @@ class SeccompHostTests(unittest.TestCase):
         self.assertEqual(prog[-2], (0x06, 0, 0, sc_mod.SECCOMP_RET_ERRNO | 1))
         self.assertEqual(prog[-1], (0x06, 0, 0, sc_mod.SECCOMP_RET_ALLOW))
         # Socket domain sub-chain: LD.W.ABS 16, JEQ AF_INET, JEQ AF_INET6
-        sc_start = 4 + 69  # sub-chain starts after JEQ chain
+        sc_start = 4 + 70  # sub-chain starts after JEQ chain
         self.assertEqual(prog[sc_start], (0x20, 0, 0, sc_mod._OFF_ARGS0))  # LD args[0]
         self.assertEqual(prog[sc_start + 1][3], sc_mod._AF_INET)           # JEQ AF_INET
         self.assertEqual(prog[sc_start + 2][3], sc_mod._AF_INET6)          # JEQ AF_INET6
         # Non-socket JEQ entries jump to RET ALLOW (last instruction).
-        for i in range(4, 4 + 69):
+        for i in range(4, 4 + 70):
             insn = prog[i]
             if insn[0] != 0x15:
                 continue  # skip non-JEQ (shouldn't happen)
@@ -578,7 +605,7 @@ class SeccompProbeTests(unittest.TestCase):
         cfg = RuntimeConfig.from_dict(valid_config(src))
         check = setup._seccomp_probe_impl(cfg)
         self.assertTrue(check.ok, check.reason)
-        self.assertIn("69-syscall default-deny", check.reason)
+        self.assertIn("70-syscall default-deny", check.reason)
         self.assertIn("EPERM", check.reason)
 
     @skip_unless_linux

@@ -1521,7 +1521,10 @@ v0.2 Step 2 adds the plumbing for `network_mode="allowlist"`:
   allowlisted but restricted to `AF_INET` (2) / `AF_INET6` (10); every
   other domain (`AF_UNIX`/`AF_NETLINK`/`AF_PACKET`/…) is denied EPERM
   (policy.md §3, §5; syscall-classification.md §1.6). Seccomp count is
-  UNCHANGED: 69 = tier0 29 + tier1 40.
+  70 = tier0 29 + tier1 41 (69 baseline + fsync, the Phase 10
+  dependency-installation syscall — see policy.md §5; getsockname/
+  getpeername x86_64 numbers corrected to 51/52 during the same
+  measurement).
 - `network_mode` config accepted: `deny` (default, unchanged) and
   `allowlist`. `run_in_sandbox(network_mode=...)` wires the veth setup
   between the netns creation and the go signal; deny mode is

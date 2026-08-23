@@ -41,12 +41,15 @@ SYS = {
     "poll": 7,
     # v0.2 networking — now allowed in the allowlist
     "socket": 41, "connect": 42, "sendto": 44, "recvfrom": 45,
-    "getsockopt": 55, "setsockopt": 54, "getsockname": 50, "getpeername": 51,
+    "getsockopt": 55, "setsockopt": 54, "getsockname": 51, "getpeername": 52,
     # v0.2 toolchain variants (native Ubuntu 24.04 / kernel 6.8 trace)
     "chmod": 90, "close_range": 436, "copy_file_range": 326,
     "fadvise64": 221, "fstatfs": 197, "lgetxattr": 192, "link": 86,
     "listxattr": 194, "rename": 82, "statfs": 137, "statx": 332,
     "symlink": 88, "umask": 95, "uname": 63, "unlinkat": 263,
+    # Phase 10 dependency-installation workflow (pip adjacent_tmp_file
+    # atomic-write durability; the ONLY genuinely required pip syscall)
+    "fsync": 74,
     # denied probes (must NOT be in the allowlist)
     "ptrace": 101, "mount": 165, "chroot": 161,
     "unshare": 272, "clone": 56,

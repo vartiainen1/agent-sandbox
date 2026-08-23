@@ -296,8 +296,18 @@ class PivotRootTests(unittest.TestCase):
             absent = {p: os.path.lexists(p) for p in fs_mod.HOST_ABSENT_PATHS}
             placeholders = {p: os.path.isdir(p) for p in ("/usr", "/bin", "/lib", "/etc")}
             tmp_is_tmpfs = os.stat("/tmp").st_dev != os.stat("/").st_dev
+            # Phase 10 (2026-08-23): /tmp must be NOSUID|NODEV (defense-
+            # in-depth - the T-048 setuid-containment assertion).
+            tmp_mount = ""
+            with open("/proc/self/mountinfo", encoding="ascii") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) > 5 and parts[4] == "/tmp":
+                        tmp_mount = parts[5]
+                        break
             return json.dumps({"absent": absent, "placeholders": placeholders,
                                "tmp_is_tmpfs": tmp_is_tmpfs,
+                               "tmp_mount": tmp_mount,
                                "workspace": os.path.isdir("/workspace"),
                                "proc_dir": os.path.isdir("/proc"),
                                "dev_dir": os.path.isdir("/dev")})
@@ -315,6 +325,10 @@ class PivotRootTests(unittest.TestCase):
         for p, ok in data["placeholders"].items():
             self.assertTrue(ok, f"rootfs placeholder {p} missing")
         self.assertTrue(data["tmp_is_tmpfs"])
+        self.assertIn("nosuid", data["tmp_mount"].split(","),
+                      "sandbox /tmp must be mounted nosuid")
+        self.assertIn("nodev", data["tmp_mount"].split(","),
+                      "sandbox /tmp must be mounted nodev")
         self.assertTrue(data["workspace"])
         # /proc and /dev are mounted by design (present-but-isolated).
         self.assertTrue(data["proc_dir"])
