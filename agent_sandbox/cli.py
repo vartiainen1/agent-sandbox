@@ -486,7 +486,8 @@ def _cmd_exec(argv: list[str], base: str) -> int:
     opt_argv, command = _split_command(argv)
     parser = argparse.ArgumentParser(
         prog="agent-sandbox exec",
-        description="Execute a command inside an existing session.")
+        description="Execute a command inside an existing session.",
+        epilog="usage: agent-sandbox exec <session-id> -- command arg ...")
     parser.add_argument("session_id",
                         help="the session id returned by create")
     parser.add_argument("--json", action="store_true",
@@ -579,7 +580,8 @@ def _cmd_diff(argv: list[str], base: str) -> int:
     parser = argparse.ArgumentParser(
         prog="agent-sandbox diff",
         description="git diff INSIDE the sandbox on /workspace "
-                    "(gated on the git.read policy capability).")
+                    "(gated on the git.read policy capability).",
+        epilog="usage: agent-sandbox diff <session-id> [-- extra-git-args ...]")
     parser.add_argument("session_id",
                         help="the session id returned by create")
     parser.add_argument("--json", action="store_true",
@@ -606,7 +608,8 @@ def _cmd_git(argv: list[str], base: str) -> int:
         prog="agent-sandbox git",
         description="Safe Git workflow INSIDE the sandbox (Phase C): "
                     "status/diff/changed/untracked/deleted/base/current "
-                    "- a closed read-only set, gated on git.read.")
+                    "- a closed read-only set, gated on git.read.",
+        epilog="usage: agent-sandbox git <session-id> <operation> [-- extra-git-args ...]")
     parser.add_argument("session_id",
                         help="the session id returned by create")
     parser.add_argument("operation",
