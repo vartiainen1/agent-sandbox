@@ -48,6 +48,7 @@
 | Full unit suite passes | **VERIFIED** | 761 run, 0 failures, 0 errors (272 documented Linux-gated skips) |
 | Fail-closed matrix exists | **VERIFIED** | `tests/unit/test_failclosed_matrix.py` — 145 tests |
 | Fail-closed matrix passes | **VERIFIED** | 145 run, 0 failures (19 documented skips) |
+| Phase 17 S-invariant coverage matrix | **VERIFIED** | `tests/regression/test_s_invariant_coverage.py` — 40 S-invariants mapped, 44 tests, 0 failures (13 Windows substrate skips) |
 
 ---
 
