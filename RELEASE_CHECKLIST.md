@@ -214,6 +214,11 @@
 | Security regression tests | **VERIFIED** | 761 unit + 70 adversarial + 21 fuzz + 13 race + 44 Phase-17 S-invariant coverage |
 | Adversarial tests | **VERIFIED** | 70 adversarial tests through real boundary |
 
+> **Test-infrastructure fix (2026-08-24):** Phase 17 smoke-test factory now
+> executes `unittest.addCleanup()` callbacks via `doCleanups()`, preventing
+> mock/state leakage between tests. Full suite restored to 0 failures
+> (previously 6 platform-detection tests failed due to leaked `_is_linux` mock).
+
 ---
 
 ## Summary

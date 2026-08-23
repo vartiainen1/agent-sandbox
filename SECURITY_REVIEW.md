@@ -15,7 +15,7 @@
 
 | Item | Value |
 |---|---|
-| HEAD commit | `f50430d` |
+| HEAD commit | `4944800` |
 | v0.1.0 tag | `bb73386` (annotated, unsigned) |
 | Working tree at preparation | CLEAN |
 | Seccomp allowlist | 70 syscalls (tier0=29, tier1=41) |
@@ -685,8 +685,8 @@ The independent reviewer should independently assess:
 | Reviewer name/identity | |
 | Reviewer independence confirmed | |
 | Date of review | |
-| Commit reviewed | `f50430d` |
-| Repository state | HEAD `f50430d`, v0.1.0 tag `bb73386`, seccomp 70 syscalls |
+| Commit reviewed | `4944800` |
+| Repository state | HEAD `4944800`, v0.1.0 tag `bb73386`, seccomp 70 syscalls |
 | Review scope | All 13 areas from implementation.md section 25 |
 | Findings | |
 | Severity of findings | |
