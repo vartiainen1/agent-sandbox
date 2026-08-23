@@ -459,6 +459,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, cli_mod.EXIT_USAGE)
         self.assertIn("no command", err)
 
+    def test_unknown_command_shows_usage(self):
+        code, _, err = self._run_cli(["nonexistent"])
+        self.assertEqual(code, cli_mod.EXIT_USAGE)
+        self.assertIn("unknown command", err)
+        self.assertIn("commands:", err)
+
+    def test_no_args_shows_usage(self):
+        code, _, err = self._run_cli([])
+        self.assertEqual(code, cli_mod.EXIT_USAGE)
+        self.assertIn("commands:", err)
+
     def test_invalid_mode_usage_error(self):
         code, _, _ = self._run_cli(["--mode", "supersafe",
                                     "--workspace", "/tmp", "--", "x"])

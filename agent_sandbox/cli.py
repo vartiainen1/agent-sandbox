@@ -775,6 +775,24 @@ def _cmd_destroy(argv: list[str], base: str) -> int:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _print_usage() -> None:
+    """Top-level help showing all available commands."""
+    print("usage: agent-sandbox <command> [options]", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("commands:", file=sys.stderr)
+    print("  run       One-shot create + execute + cleanup", file=sys.stderr)
+    print("  create    Create + initialize an isolated session", file=sys.stderr)
+    print("  exec      Execute a command inside an existing session", file=sys.stderr)
+    print("  status    Show session state, mode and configured limits", file=sys.stderr)
+    print("  diff      git diff INSIDE the sandbox on /workspace", file=sys.stderr)
+    print("  logs      Show session audit events (observational)", file=sys.stderr)
+    print("  destroy   Terminate + clean up a session", file=sys.stderr)
+    print("  git       Safe read-only git workflow inside the sandbox", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Run 'agent-sandbox <command> --help' for command-specific help.",
+          file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None,
          state_dir: str | None = None) -> int:
     """CLI entry point. Returns the deterministic process exit code.
@@ -801,7 +819,17 @@ def main(argv: Sequence[str] | None = None,
             return _cmd_destroy(rest, base)
         if cmd == "git":
             return _cmd_git(rest, base)
-    # Legacy one-shot form (no subcommand) == run.
+    # Unknown command or no arguments: show top-level usage.
+    # Legacy one-shot form (no subcommand, starts with options like
+    # --workspace) falls through to _cmd_run for backward compatibility.
+    if raw and not raw[0].startswith("-"):
+        print(f"agent-sandbox: unknown command {raw[0]!r}", file=sys.stderr)
+        _print_usage()
+        return EXIT_USAGE
+    if not raw:
+        _print_usage()
+        return EXIT_USAGE
+    # Legacy one-shot form: no subcommand, options go to run.
     return _cmd_run(raw)
 
 
