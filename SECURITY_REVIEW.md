@@ -15,7 +15,7 @@
 
 | Item | Value |
 |---|---|
-| HEAD commit | `5131903` |
+| HEAD commit | `f50430d` |
 | v0.1.0 tag | `bb73386` (annotated, unsigned) |
 | Working tree at preparation | CLEAN |
 | Seccomp allowlist | 70 syscalls (tier0=29, tier1=41) |
@@ -554,7 +554,16 @@ python -m unittest tests.unit.test_race_concurrency -v
 
 Expected: 13/13 PASS.
 
-### 5.6 Seccomp derivation tests
+### 5.6 Phase 17 S-invariant coverage regression suite
+
+```bash
+cd agent-sandbox
+python -m unittest tests.regression.test_s_invariant_coverage -v
+```
+
+Expected: 44 run, 0 failures, 13 documented Windows-substrate skips. All 40 S-invariants (S-001..S-040) mapped to real test classes.
+
+### 5.7 Seccomp derivation tests
 
 ```bash
 cd agent-sandbox
@@ -676,8 +685,8 @@ The independent reviewer should independently assess:
 | Reviewer name/identity | |
 | Reviewer independence confirmed | |
 | Date of review | |
-| Commit reviewed | `5131903` |
-| Repository state | HEAD `5131903`, v0.1.0 tag `bb73386`, seccomp 70 syscalls |
+| Commit reviewed | `f50430d` |
+| Repository state | HEAD `f50430d`, v0.1.0 tag `bb73386`, seccomp 70 syscalls |
 | Review scope | All 13 areas from implementation.md section 25 |
 | Findings | |
 | Severity of findings | |

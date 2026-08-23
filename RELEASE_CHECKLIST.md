@@ -211,7 +211,7 @@
 | Session lifecycle | **VERIFIED** | 21 lifecycle tests + destroy race tests |
 | Structured audit | **VERIFIED** | ADR-012 JSONL recorder, session-correlated |
 | CLI | **VERIFIED** | Phase B — create/exec/run/status/diff/logs/destroy |
-| Security regression tests | **VERIFIED** | 761 unit + 70 adversarial + 21 fuzz + 13 race |
+| Security regression tests | **VERIFIED** | 761 unit + 70 adversarial + 21 fuzz + 13 race + 44 Phase-17 S-invariant coverage |
 | Adversarial tests | **VERIFIED** | 70 adversarial tests through real boundary |
 
 ---
@@ -223,7 +223,7 @@
 | Security spec | 4 | 0 | 0 | 0 |
 | Threat model | 3 | 0 | 0 | 0 |
 | Adversarial | 4 | 0 | 0 | 0 |
-| Regression/unit | 4 | 0 | 0 | 0 |
+| Regression/unit | 5 | 0 | 0 | 0 |
 | Lifecycle | 4 | 0 | 0 | 0 |
 | Resources | 5 | 0 | 0 | 0 |
 | Policy | 4 | 0 | 0 | 0 |
@@ -236,7 +236,7 @@
 | CI gates | 6 | 0 | 0 | 0 |
 | Independent review | 0 | 0 | 1 | 0 |
 | v0.1 acceptance | 13 | 0 | 0 | 0 |
-| **Total** | **77** | **2** | **7** | **1** |
+| **Total** | **78** | **2** | **7** | **1** |
 
 ---
 
