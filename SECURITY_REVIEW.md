@@ -15,10 +15,10 @@
 
 | Item | Value |
 |---|---|
-| HEAD commit | `708f9ad` |
+| HEAD commit | `cc50bb8` |
 | v0.1.0 tag | `bb73386` (annotated, unsigned) |
 | Working tree at preparation | CLEAN |
-| Seccomp allowlist | 46 syscalls (tier0=27, tier1=19) |
+| Seccomp allowlist | 70 syscalls (tier0=29, tier1=41) |
 | Runtime dependencies | zero (`dependencies = []`) |
 | Architecture | x86_64 |
 | Primary platform | Ubuntu 24.04 / kernel 6.8 |
@@ -614,7 +614,7 @@ Expected: three-way decision equivalence verified.
 
 ## 6. Known Limitations
 
-1. **aarch64 native enforcement NOT VERIFIED** — the aarch64 seccomp allowlist (43 syscalls) is derived and regression-gated, but filter installation and enforcement have not been tested on a native aarch64 host. SUBSTRATE-LIMITED.
+1. **aarch64 native enforcement NOT VERIFIED** — the aarch64 seccomp allowlist (67 syscalls) is derived and regression-gated, but filter installation and enforcement have not been tested on a native aarch64 host. SUBSTRATE-LIMITED.
 
 2. **Full SECURITY_SPEC.md coverage NOT ESTABLISHED** — while every S-invariant maps to at least one test (THREAT_MODEL section 10), the evidence is a mix of NATIVE VERIFIED, DOCKER VERIFIED, and HOST-SIDE VERIFIED. Not every invariant has native kernel-boundary evidence.
 
@@ -676,8 +676,8 @@ The independent reviewer should independently assess:
 | Reviewer name/identity | |
 | Reviewer independence confirmed | |
 | Date of review | |
-| Commit reviewed | `708f9ad` |
-| Repository state | HEAD `708f9ad`, v0.1.0 tag `bb73386`, seccomp 46 syscalls |
+| Commit reviewed | `cc50bb8` |
+| Repository state | HEAD `cc50bb8`, v0.1.0 tag `bb73386`, seccomp 70 syscalls |
 | Review scope | All 13 areas from implementation.md section 25 |
 | Findings | |
 | Severity of findings | |

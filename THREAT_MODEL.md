@@ -460,7 +460,7 @@ away):
 
 **Key gaps (by design, documented):**
 1. **HARDENED end-to-end (P3)** -- now HARDENED END-TO-END VERIFIED (NATIVE) on the documented Ubuntu 24.04 / kernel 6.8 / x86_64 QEMU VM with a caller-owned delegated cgroup subtree (commit 7c1c30e, 24/24 PASS). The fail-closed refusal at RESOURCES when delegation is absent remains correct and verified on substrates without it (earlier e3b9873 Docker/WSL2 run preserved as historical evidence)
-2. **aarch64 runtime (P4)** -- allowlist derivation (43 syscalls), BPF construction, AUDIT_ARCH_AARCH64 guard, syscall-number validity all HOST-VERIFIED; filter installation/enforcement NOT VERIFIED (Docker Desktop's runtime seccomp blocks PR_SET_SECCOMP; requires native aarch64)
+2. **aarch64 runtime (P4)** -- allowlist derivation (67 syscalls), BPF construction, AUDIT_ARCH_AARCH64 guard, syscall-number validity all HOST-VERIFIED; filter installation/enforcement NOT VERIFIED (Docker Desktop's runtime seccomp blocks PR_SET_SECCOMP; requires native aarch64)
 3. **T-015 / T-017 (network)** -- v0.1: no network exists (deny by construction) and SSRF/DNS were DESIGN INTENT. v0.2 Step 3 (2026-08-23) implements + verifies the SSRF/DNS protection in the validating proxy: destination validation at connect, host-side resolution, DNS-rebinding denial, config-time dead-entry rejection (see 10.2 rows). Remaining documented limitation: the proxy is IPv4-only (IPv6 destinations are denied) and the iptables rules require the `iptables` binary + CAP_NET_ADMIN (fail closed otherwise)
 4. **rootless cgroup v2** -- HARDENED refused when delegation absent; documented gap, not silently degraded
 

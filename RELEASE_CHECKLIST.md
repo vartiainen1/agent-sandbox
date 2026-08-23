@@ -158,7 +158,7 @@
 | Phase C hostile-repository native verification | **VERIFIED** | Commit a6305bb — 4/4 SandboxGitContainmentTests PASS |
 | Adversarial suite native | **PARTIALLY VERIFIED** | 59/59 in-sandbox tests pass on capable substrate; 52 Linux-gated skips on CI |
 | aarch64 HARDENED | **NOT VERIFIED** | SUBSTRATE-LIMITED — requires native aarch64 host |
-| Seccomp BPF construction aarch64 | **VERIFIED** | 43-syscall allowlist derived, regression-gated (commit a5338da) |
+| Seccomp BPF construction aarch64 | **VERIFIED** | 67-syscall allowlist derived, regression-gated (commit a5338da) |
 | aarch64 filter installation/enforcement | **NOT VERIFIED** | Requires native aarch64 host |
 
 ---
