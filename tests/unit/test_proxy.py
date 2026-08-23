@@ -1055,5 +1055,181 @@ class Phase10DependencyInstallTests(unittest.TestCase):
         self.assertFalse(os.path.exists("/sys/class/net/veth-sbx-h"))
 
 
+# ---------------------------------------------------------------------------
+# Phase 10 remainder - npm (Node) / cargo (Rust) toolchain decision
+# ---------------------------------------------------------------------------
+
+class Phase10NpmCargoDecisionTests(unittest.TestCase):
+    """Phase 10 remainder: npm and cargo are INTENTIONALLY unsupported
+    inside the sandbox - no syscall-policy expansion (clone3 stays
+    denied).
+
+    Real-filter measurement (2026-08-23, Debian 13 / node 20.19.2 /
+    cargo 1.85.0 under the project's own build_program + install_filter):
+
+    - node -e aborts at startup: uv_loop_init (eventfd2 denied) then
+      WorkerThreadsTaskRunner::DelayedTaskScheduler::Start (clone3
+      denied) - Node spawns a platform scheduler thread for EVERY
+      workload; no flag avoids it. rc=139 under the 70-filter.
+    - cargo fetch fails 'Operation not permitted' at clone3
+      (CLONE_VFORK spawning rustc). rc=101 under the 70-filter.
+    - Node additionally needs eventfd2, epoll_ctl/epoll_pwait, madvise,
+      exit (thread teardown; only exit_group is allowlisted).
+
+    Decision (S-014): clone/clone3 are the single-process containment
+    boundary - the sandbox is a single-process execve bridge (no
+    fork/threads) and process-tree cleanup + PID-1 model depend on it.
+    A dependency installer wanting threads is not a security-reviewed
+    justification for process creation. These tests pin the decision
+    without requiring node/cargo binaries in the toolchain."""
+
+    def test_clone_and_clone3_remain_denied_in_allowlist(self):
+        """The 70-syscall allowlist must not contain clone or clone3
+        (the S-014 single-process boundary). npm/cargo both require
+        clone3 - so they remain unsupported, by decision not omission."""
+        import json
+        with open(os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__)))),
+                "tools/seccomp-derivation/allowlist.json"),
+                  encoding="utf-8") as f:
+            d = json.load(f)
+        allow = set(d["allowlist"])
+        self.assertNotIn("clone", allow)
+        self.assertNotIn("clone3", allow)
+        # The runtime table has no numbers for them either (fail closed
+        # if someone tries to add them without the derivation change).
+        from agent_sandbox.isolation import seccomp as seccomp_mod
+        self.assertNotIn("clone", seccomp_mod._X86_64)
+        self.assertNotIn("clone3", seccomp_mod._X86_64)
+
+    def test_node_required_syscalls_not_added(self):
+        """The syscalls Node needs beyond the allowlist (eventfd2,
+        epoll_ctl, epoll_pwait, madvise, exit) are NOT added - the
+        measured requirement does not justify expanding the boundary."""
+        import json
+        with open(os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__)))),
+                "tools/seccomp-derivation/allowlist.json"),
+                  encoding="utf-8") as f:
+            d = json.load(f)
+        allow = set(d["allowlist"])
+        for name in ("eventfd2", "epoll_ctl", "epoll_pwait",
+                     "madvise", "exit"):
+            self.assertNotIn(name, allow,
+                             f"{name} must stay denied (npm unsupported)")
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and hasattr(os, "fork"),
+        "real sandbox requires Linux")
+    def test_npm_and_cargo_absent_from_curated_toolchain(self):
+        """The curated toolchain does NOT ship node/npm/cargo/rustc:
+        they cannot run under the filter (clone3), so shipping them would
+        be dead weight and a false affordance. Presence check is on the
+        toolchain MANIFEST; absence = the documented decision."""
+        toolchain = os.environ.get("AGENT_SANDBOX_TOOLCHAIN")
+        if not toolchain or not os.path.isdir(toolchain):
+            self.skipTest("AGENT_SANDBOX_TOOLCHAIN not set")
+        manifest = os.path.join(toolchain, "MANIFEST")
+        if not os.path.isfile(manifest):
+            self.skipTest("toolchain MANIFEST missing")
+        with open(manifest, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        for name in ("node", "npm", "cargo", "rustc"):
+            self.assertNotIn(f"/usr/bin/{name}", text,
+                             f"{name} must not be shipped in the curated "
+                             "toolchain (clone3-dependent, unsupported)")
+
+    def test_single_process_model_pins(self):
+        """Structural pins that keep the single-process model intact:
+        no fork/clone/posix_spawn anywhere in the sandbox allowlist, and
+        the execve bridge is the only execution path."""
+        from agent_sandbox.isolation import seccomp as seccomp_mod
+        allow = set(seccomp_mod._X86_64.keys())
+        for name in ("clone", "clone3", "fork", "vfork"):
+            if name in ("vfork",):
+                # vfork IS allowlisted as the execve-bridge primitive on
+                # x86_64; it is single-process (no address-space copy).
+                continue
+            self.assertNotIn(name, allow,
+                             f"{name} must stay denied (single-process)")
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 remainder - npm/cargo in-sandbox attempts fail closed
+# ---------------------------------------------------------------------------
+
+class Phase10NpmCargoFailClosedTests(unittest.TestCase):
+    """npm/cargo attempts inside the REAL sandbox fail closed: clean
+    (no hang, no leak, no surviving process), regardless of whether the
+    binary is present.
+
+    - With the curated toolchain (no node/cargo), the execve bridge
+      fails with ENOENT - contained, prompt.
+    - If a node/cargo binary WERE present, the 70-syscall filter denies
+      its startup syscalls (eventfd2 for Node's uv_loop_init, clone3 for
+      both) - the process aborts (rc 139/101 measured under the real
+      filter), never hangs, never escapes.
+
+    Requires Linux + root; skips otherwise."""
+
+    def setUp(self):
+        if platform.system() != "Linux" or not hasattr(os, "fork"):
+            self.skipTest("requires Linux with os.fork")
+        if os.geteuid() != 0:
+            self.skipTest("requires root")
+
+    def _run_tool(self, argv):
+        """Exec ``argv`` via the execve bridge inside the real sandbox;
+        returns the SandboxRun."""
+        from agent_sandbox.isolation import setup as setup_mod
+
+        def fn(state):
+            env = dict(os.environ)
+            env.update({"PATH": "/usr/bin:/bin", "HOME": "/tmp",
+                        "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"})
+            try:
+                os.execve(argv[0], argv, env)
+            except OSError as e:
+                # execve-bridge failure: report it (contained).
+                os.write(1, f"EXEC-FAIL: {e}\n".encode())
+                os._exit(2)
+
+        return setup_mod.run_in_sandbox(
+            fn, network_mode="deny", wall_time_seconds=60)
+
+    def test_npm_exec_attempt_fails_cleanly(self):
+        """npm (via node) cannot execute inside the sandbox: with the
+        curated toolchain the execve fails ENOENT; with a node binary it
+        would abort on eventfd2/clone3 (EPERM). Either way: prompt
+        failure, no hang, no survivor, clean teardown."""
+        run = self._run_tool(["/usr/bin/npm", "--version"])
+        self.assertNotEqual(run.exit_code, 0, "npm must not run")
+        self.assertFalse(run.timed_out, "must fail promptly, not hang")
+        self.assertEqual(run.cleanup_failure, "", run.cleanup_failure)
+
+    def test_cargo_exec_attempt_fails_cleanly(self):
+        """The cargo dependency WORKFLOW cannot run inside the sandbox:
+        with the curated toolchain the binary is absent (ENOENT); with a
+        cargo binary present, fetch/build spawns rustc via clone3
+        (EPERM - measured rc=101 under the real filter). ``cargo
+        --version`` does NOT exercise the workflow (no clone3) and is not
+        what this pins. Use the fetch subcommand, which is the
+        dependency-install entry point."""
+        run = self._run_tool(["/usr/bin/cargo", "fetch"])
+        self.assertNotEqual(run.exit_code, 0, "cargo fetch must not run")
+        self.assertFalse(run.timed_out, "must fail promptly, not hang")
+        self.assertEqual(run.cleanup_failure, "", run.cleanup_failure)
+
+    def test_node_exec_attempt_fails_cleanly(self):
+        """node itself cannot start (uv_loop_init eventfd2 EPERM): prompt
+        failure, no hang."""
+        run = self._run_tool(["/usr/bin/node", "-e", "console.log(1)"])
+        self.assertNotEqual(run.exit_code, 0, "node must not run")
+        self.assertFalse(run.timed_out, "must fail promptly, not hang")
+        self.assertEqual(run.cleanup_failure, "", run.cleanup_failure)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,16 @@ filesystem:
   `pip install --proxy http://10.255.254.0:8080 ...` runs through the
   validating proxy inside the sandbox. The build fails closed if
   `python3-pip` is not installed on the build host;
+- **node/npm/cargo/rustc are DELIBERATELY EXCLUDED** (Phase 10
+  remainder, 2026-08-23): real-filter measurement proved npm (Node)
+  and cargo UNCONDITIONALLY require `clone3` — Node spawns a platform
+  scheduler thread at startup for every workload, cargo spawns rustc
+  children even for `cargo fetch`. clone/clone3 are the S-014
+  single-process containment boundary, so these toolchains cannot run
+  inside the sandbox and are NOT shipped (shipping them would be dead
+  weight and a false affordance). Their absence is pinned by
+  `test_proxy.py::Phase10NpmCargoDecisionTests`; pip remains the
+  supported dependency-installation workflow;
 - each binary's **ldd closure** (glibc + every NEEDED shared object +
   the dynamic loader), copied to their real relative paths;
 - the **python stdlib** (`/usr/lib/python3.12/`) and the **git-core**
@@ -93,7 +103,8 @@ system layer would let the workload tamper its own toolchain.
   inventory (ADR-015), `/sys` stays absent (ADR-005), the netns
   deny-by-construction is unchanged.
 - No new syscalls: the allowlist was derived from these same
-  python/coreutils/git workloads. (46 on x86_64 as of the documented
-  2026-08-22 `+chdir` for the git closed set — see
-  docs/seccomp-derivation/policy.md §5; the toolchain adds no syscalls
-  itself.)
+  python/coreutils/git/pip workloads. (70 on x86_64 as of the Phase 10
+  dependency-installation measurement — `+fsync` 2026-08-23; the
+  toolchain adds no syscalls itself. npm/cargo were measured and
+  explicitly REJECTED — no expansion for clone3-dependent tools, see
+  docs/seccomp-derivation/policy.md §5.)

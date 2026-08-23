@@ -111,6 +111,33 @@ teardown, zero iptables rules referencing the veth. The `WARNING:
 Failed to remove contents in a temporary directory ...` lines are the
 DOCUMENTED tolerated `rmdir` EPERM behavior (rmdir stays denied).
 
+### npm/cargo measurement (Phase 10 remainder, 2026-08-23)
+
+```bash
+# Node under the REAL 70-syscall filter (project build_program + install_filter)
+strace -f -e trace=syscall node -e 'console.log(42)'
+# => fatal abort at startup: uv_loop_init (eventfd2 EPERM), then
+#    WorkerThreadsTaskRunner::DelayedTaskScheduler::Start (clone3 EPERM)
+# => node CANNOT start ANY workload without clone3 (platform scheduler thread)
+#    + eventfd2, epoll_ctl, epoll_pwait, madvise, exit
+
+# Cargo under the REAL 70-syscall filter
+cargo fetch
+# => 'Operation not permitted' at clone3 (CLONE_VFORK spawning rustc)
+#    even cargo fetch (download-only) needs it; rc=101
+
+# Full-sandbox e2e with a REAL node binary present in a scratch toolchain:
+# node aborts at uv_loop_init (eventfd2 EPERM), exit 245 (SIGABRT),
+# prompt (0.07s), no hang, no survivor, clean teardown
+```
+
+**Decision: NO syscall-policy expansion.** clone/clone3 are the S-014
+single-process containment boundary; a dependency installer wanting
+threads is not a security-reviewed justification for process creation
+inside the sandbox. npm/cargo remain unsupported in-sandbox, fail
+closed cleanly, and are absent from the curated toolchain. pip remains
+the supported dependency-installation workflow.
+
 ---
 
 ## 4. Known limitations (explicit)
@@ -123,10 +150,28 @@ DOCUMENTED tolerated `rmdir` EPERM behavior (rmdir stays denied).
 - **HTTPS indexes only**: pip does not CONNECT for plain-`http://`
   URLs (it sends `GET http://...`), which the proxy correctly rejects.
   Use `https://` indexes (self-signed OK with `--trusted-host`).
-- **Node/Rust dependency workflows** (implementation.md Phase 10 lists
-  npm/cargo) are NOT implemented in this substep — only the Python/pip
-  workflow is. The npm/cargo toolchain surfaces and their syscall
-  requirements are outstanding Phase 10 work.
+- **Node/Rust dependency workflows (npm/cargo): MEASURED and
+  INTENTIONALLY UNSUPPORTED** — this is a documented DECISION, not
+  outstanding work. Real-filter measurement (project's own
+  `build_program` + `install_filter`, strace, Debian 13 / node
+  20.19.2 / cargo 1.85.0) proves both tools GENUINELY and
+  UNCONDITIONALLY require `clone3` (Node's platform scheduler thread
+  at startup for EVERY workload — no flag avoids it; cargo spawns
+  rustc children even for `cargo fetch`; Node also needs eventfd2,
+  epoll_ctl/epoll_pwait, madvise, exit). clone/clone3 are the S-014
+  single-process containment boundary (the sandbox is a single-process
+  execve bridge; process-tree cleanup + PID-1 model depend on it), so
+  NO policy expansion was made — the 70-syscall allowlist is
+  unchanged. npm/cargo are not shipped in the curated toolchain and
+  fail closed cleanly inside the sandbox (node rc=139 abort at
+  eventfd2, cargo rc=101 at clone3 — prompt, no hang, no leak;
+  verified native full-sandbox e2e with a real node binary present,
+  exit 245/SIGABRT, clean teardown). Pinned by
+  `test_proxy.py::Phase10NpmCargoDecisionTests` (clone/clone3 absent
+  from allowlist + runtime table, Node's extra syscalls absent,
+  toolchain MANIFEST has no node/npm/cargo/rustc) and
+  `Phase10NpmCargoFailClosedTests` (in-sandbox exec attempts fail
+  cleanly). See policy.md §5 decision record.
 - **aarch64**: number mappings updated (fsync=82); native aarch64
   filter verification remains SUBSTRATE-LIMITED (unchanged).
 

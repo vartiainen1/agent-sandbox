@@ -228,6 +228,35 @@ The allowlist is a regression-protected security artifact
   intended) — no boundary weakened. Regression test:
   `test_seccomp.py::test_x86_64_socket_syscall_numbers`.
 
+- **2026-08-23 — npm (Node) / cargo (Rust): NO EXPANSION — decision
+  record (70 unchanged; tier0=29, tier1=41).** Phase 10 remainder:
+  measure whether the npm/cargo dependency-installation workflows can
+  run inside the sandbox. Real-filter measurement (project's own
+  `build_program` + `install_filter`, strace, Debian 13 / node
+  20.19.2 / cargo 1.85.0, WSL2 kernel 6.18) proves BOTH tools
+  GENUINELY and UNCONDITIONALLY require `clone3`:
+  - Node spawns a platform scheduler thread at startup
+    (`uv_thread_create` → `clone3` CLONE_THREAD, src/node_platform.cc
+    DelayedTaskScheduler::Start) for EVERY workload — no flag avoids
+    it; even `node -e` crashes without it. Node also requires
+    `eventfd2` (uv_loop_init), `epoll_ctl`/`epoll_pwait` (libuv event
+    loop), `madvise` (V8 heap), and `exit` (thread teardown — the
+    filter only allowlists `exit_group`).
+  - cargo spawns rustc child processes (`clone3` CLONE_VFORK) even for
+    `cargo fetch` (download-only; no compile).
+  DECISION: NO POLICY EXPANSION. `clone`/`clone3` are the S-014
+  single-process containment boundary (the sandbox is a single-process
+  execve bridge — no fork/threads; process-tree cleanup and the PID-1
+  model depend on it). A dependency installer wanting threads is NOT a
+  security-reviewed justification for process creation. npm/cargo
+  remain INTENTIONALLY UNSUPPORTED inside the sandbox; they fail
+  closed cleanly (node rc=139 abort at eventfd2, cargo rc=101 at
+  clone3 — prompt, no hang, no leak). pip remains the supported
+  dependency-installation workflow. Decision pinned by
+  `test_proxy.py::Phase10NpmCargoDecisionTests` (clone/clone3 absent
+  from allowlist + runtime table, Node's extra syscalls absent) and
+  `Phase10NpmCargoFailClosedTests` (in-sandbox attempts fail cleanly).
+
 ## 6. Known limitations (documented, not hidden)
 
 - CPython `threading` / thread-based `multiprocessing` are unavailable
