@@ -15,7 +15,7 @@
 
 | Item | Value |
 |---|---|
-| HEAD commit | `cc50bb8` |
+| HEAD commit | `5131903` |
 | v0.1.0 tag | `bb73386` (annotated, unsigned) |
 | Working tree at preparation | CLEAN |
 | Seccomp allowlist | 70 syscalls (tier0=29, tier1=41) |
@@ -571,7 +571,7 @@ python tools/seccomp-derivation/trace_workloads.py --out /tmp/trace.json
 python tools/seccomp-derivation/check_trace_regression.py /tmp/trace.json
 ```
 
-Expected: PASS — allowlist exactly 69 (tier0 29 + tier1 40), no undocumented expansion.
+Expected: PASS — allowlist exactly 70 (tier0 29 + tier1 41), no undocumented expansion.
 
 ### 5.8 Seccomp behavioral probe (requires Linux)
 
@@ -676,8 +676,8 @@ The independent reviewer should independently assess:
 | Reviewer name/identity | |
 | Reviewer independence confirmed | |
 | Date of review | |
-| Commit reviewed | `cc50bb8` |
-| Repository state | HEAD `cc50bb8`, v0.1.0 tag `bb73386`, seccomp 70 syscalls |
+| Commit reviewed | `5131903` |
+| Repository state | HEAD `5131903`, v0.1.0 tag `bb73386`, seccomp 70 syscalls |
 | Review scope | All 13 areas from implementation.md section 25 |
 | Findings | |
 | Severity of findings | |

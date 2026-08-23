@@ -45,7 +45,7 @@
 | Item | Status | Evidence |
 |---|---|---|
 | Full unit suite exists | **VERIFIED** | `tests/unit/` — 13 modules |
-| Full unit suite passes | **VERIFIED** | 756 run, 0 failures, 0 errors (272 documented Linux-gated skips) |
+| Full unit suite passes | **VERIFIED** | 761 run, 0 failures, 0 errors (272 documented Linux-gated skips) |
 | Fail-closed matrix exists | **VERIFIED** | `tests/unit/test_failclosed_matrix.py` — 145 tests |
 | Fail-closed matrix passes | **VERIFIED** | 145 run, 0 failures (19 documented skips) |
 
