@@ -279,6 +279,39 @@ class SeccompHostTests(unittest.TestCase):
                 sc_mod.build_program(EXPECTED_ALLOWLIST)
         self.assertIn("unsupported architecture", str(cm.exception))
 
+    def test_aarch64_runtime_table_getgid_is_176(self):
+        # 2026-08-23 regression (log-before-fix, AREA: agent-sandbox aarch64
+        # runtime syscall table): _SyscallTable.AARCH64 had getgid=175, but
+        # the authoritative asm-generic/unistd.h defines getgid=176 for the
+        # aarch64 (generic) ABI - 175 is geteuid and 177 is getegid. The
+        # runtime wrapper feeds userns.py's gid_map caller mapping and the
+        # PID-1 identity verification, so a wrong number would read the
+        # effective UID instead of the real GID. The derivation artifact was
+        # already correct (176) - only the runtime table was wrong.
+        from agent_sandbox.isolation import syscalls as sysc_mod
+        table = sysc_mod._SyscallTable.AARCH64
+        self.assertEqual(table["getgid"], 176)
+        # The authoritative asm-generic/unistd.h generic ABI (verified
+        # against the derivation artifact): 175=geteuid, 176=getgid,
+        # 177=getegid. The runtime table's getgid must not collide with
+        # geteuid's number (175) - the exact defect being pinned.
+        self.assertNotEqual(table["getgid"], 175)
+        # The runtime table must agree with the aarch64 derivation artifact,
+        # which carries the asm-generic-authoritative numbers.
+        artifact = json.load(open(
+            os.path.join(os.path.dirname(__file__), "..", "..", "tools",
+                          "seccomp-derivation", "allowlist_aarch64.json"),
+            encoding="utf-8"))
+        self.assertEqual(artifact["syscall_numbers"]["getgid"], 176)
+        self.assertEqual(artifact["syscall_numbers"]["geteuid"], 175)
+        self.assertEqual(artifact["syscall_numbers"]["getegid"], 177)
+        # No x86_64 values may be affected (x86_64: getgid=104, getuid=102,
+        # getpid=39 - the same triplet as before the fix).
+        x86 = sysc_mod._SyscallTable.X86_64
+        self.assertEqual(x86["getgid"], 104)
+        self.assertEqual(x86["getuid"], 102)
+        self.assertEqual(x86["getpid"], 39)
+
     def test_install_failure_refuses(self):
         def boom(option, arg2, arg3, arg4, arg5):
             raise OSError(1, "prctl: Operation not permitted (simulated)")

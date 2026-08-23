@@ -37,7 +37,7 @@ class _SyscallTable:
     }
     # aarch64
     AARCH64 = {
-        "getpid": 172, "getuid": 174, "getgid": 175,
+        "getpid": 172, "getuid": 174, "getgid": 176,
         "unshare": 97, "mount": 40, "umount2": 39,
         "pivot_root": 41, "prctl": 167, "capset": 91,
     }
