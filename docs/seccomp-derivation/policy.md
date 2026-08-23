@@ -49,6 +49,16 @@ integrity (69, sorted, unique, default action).
   `connect`, `sendto`, `recvfrom`, `getsockopt`, `setsockopt`,
   `getsockname`, `getpeername` are now ALLOWED for v0.2 proxy
   communication (see §5 changelog).
+- **Socket DOMAIN argument filtering (v0.2 Step 2)**: the `socket`
+  syscall itself is allowlisted, but the BPF filter loads `args[0]` (the
+  domain) and allows ONLY `AF_INET` (2) and `AF_INET6` (10). All other
+  domains — `AF_UNIX` (1), `AF_NETLINK` (16), `AF_PACKET` (17), and
+  everything else — are denied with EPERM. This preserves S-003/S-004
+  (credential + Unix-socket isolation): the workload can open an
+  inet-family socket for proxy communication but cannot create a Unix
+  socket, netlink socket, or raw packet socket. Layout: 4 (header) + N
+  (JEQ chain) + 3 (domain sub-chain) + 1 (default deny) + 1 (ALLOW),
+  pinned by `test_seccomp.py::test_build_program_layout`.
 - **Namespace class** (`unshare`, `setns`, `mount`-class, `pivot_root`,
   `chroot`): denied — the sandbox must never change its own isolation.
 - **Process-inspection class** (`ptrace`, `process_vm_*`): denied.
@@ -144,6 +154,22 @@ The allowlist is a regression-protected security artifact
   by seccomp. Native verification pending substrate availability.
   aarch64 allowlist updated correspondingly (43 → 51).
 
+- **2026-08-23 — socket argument-level domain filtering (v0.2 Step 2,
+  no syscall-count change; 69 = tier0 29 + tier1 40).** The `socket`
+  entry in the BPF JEQ chain no longer jumps straight to RET_ALLOW: it
+  jumps to a 3-instruction domain sub-chain that loads `args[0]` and
+  allows only `AF_INET` (2) / `AF_INET6` (10), denying everything else
+  (`AF_UNIX`/`AF_NETLINK`/`AF_PACKET`/…) with EPERM. Rationale: the v0.2
+  allowlist-mode network path needs an AF_INET socket to reach the
+  host-side validating proxy, but S-003/S-004 require that the workload
+  still cannot create Unix/netlink/raw-packet sockets (host control
+  sockets, credential-manager sockets, raw traffic). The deny-by-
+  construction netns (no routes, lo DOWN) is unchanged in deny mode and
+  remains the enforcement layer in allowlist mode until the proxy exists.
+  Seccomp count UNCHANGED (69). Layout pinned by
+  `test_seccomp.py::test_build_program_layout`; enforcement spot check
+  switched from `socket()` to `socketpair()` (still denied in both modes).
+
 - **2026-08-23 — `+chmod, close_range, copy_file_range, fadvise64,
   fstatfs, lgetxattr, link, listxattr, rename, statfs, statx, symlink,
   umask, uname, unlinkat` (tier1, 54 → 69; tier0=29, tier1=40).**
@@ -170,10 +196,13 @@ The allowlist is a regression-protected security artifact
 - CPython `threading` / thread-based `multiprocessing` are unavailable
   (no `clone`). Re-derive when threads enter the required surface.
 - v0.2 networking syscalls (socket, connect, etc.) are now allowed, but
-  the network namespace remains deny-by-construction until the proxy
-  infrastructure is implemented. The syscalls are available for the
-  proxy communication path; general outbound networking is not yet
-  possible.
+  the network namespace remains deny-by-construction in deny mode and
+  allowlist mode currently only plumbs a veth pair to the host side —
+  the validating proxy and host-side iptables/nftables destination
+  enforcement are NOT implemented yet (v0.2 Step 2 substeps, outstanding).
+  The `socket` syscall is argument-filtered to AF_INET/AF_INET6 only
+  (see §3) so no Unix/netlink/packet socket can be created even in
+  allowlist mode; general outbound networking is not yet possible.
 - x86_64/glibc-specific; other architectures must re-derive.
 - `ioctl` remains broad; bounded by minimal `/dev` and dropped
   capabilities.

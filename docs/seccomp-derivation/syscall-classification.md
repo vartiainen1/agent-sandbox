@@ -95,6 +95,18 @@ communication in v0.2. The sandbox workload connects to the validating
 proxy on `127.0.0.1` over a stream socket; the proxy validates all
 destinations before forwarding.
 
+**v0.2 Step 2 (2026-08-23) — `socket` is argument-filtered by domain.**
+The BPF filter loads `args[0]` (the socket domain) and allows only
+`AF_INET` (2) and `AF_INET6` (10). Every other domain — `AF_UNIX` (1),
+`AF_NETLINK` (16), `AF_PACKET` (17), and all others — is denied with
+EPERM. This keeps S-003/S-004 credential and Unix-socket isolation
+intact: the workload can open an inet socket for proxy traffic but
+cannot create a Unix socket (host control/SSH-agent/credential-manager
+sockets), a netlink socket (interface/route inspection or mutation), or
+a raw packet socket. The deny-by-construction netns (no routes, lo
+DOWN) is unchanged; in allowlist mode the veth pair provides the only
+path to the host-side proxy endpoint.
+
 | Syscall | Tier | Required by | Can it be removed? | What breaks? | Security impact if allowed | Decision |
 |---|---|---|---|---|---|---|
 | `socket` | 0 | proxy communication — create AF_INET/SOCK_STREAM socket | No | no socket creation; proxy communication impossible | Creates a socket object; no data flows until `connect`. The network namespace restricts which addresses are reachable (only the proxy on loopback); seccomp allows the syscall but the kernel enforces network isolation | ALLOW |

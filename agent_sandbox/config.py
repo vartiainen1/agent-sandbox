@@ -22,10 +22,11 @@ from dataclasses import dataclass, field
 from agent_sandbox.models import ConfigError, SecurityMode
 from agent_sandbox.policy import Policy, PolicyError
 
-# v0.1 network posture: deny by construction (ARCHITECTURE.md section 8).
-# "allowlist" is a v0.2 feature - rejecting it now keeps the boundary
-# honest instead of accepting a value we cannot enforce.
-SUPPORTED_NETWORK_MODES = frozenset({"deny"})
+# Network posture: deny by construction (v0.1) or allowlist via validating
+# proxy (v0.2). The allowlist mode enables a veth-pair plumbing path to a
+# host-side proxy that enforces destination restrictions; the sandbox itself
+# never has direct external network access.
+SUPPORTED_NETWORK_MODES = frozenset({"deny", "allowlist"})
 
 # Default environment allowlist (ARCHITECTURE.md section 11; S-034):
 # the host environment is never inherited - only these are constructed,
@@ -168,9 +169,9 @@ def _parse_network_mode(value) -> str:
             "- network is deny by construction")
     if value not in SUPPORTED_NETWORK_MODES:
         raise ConfigError(
-            f"network_mode: {value!r} is not supported in v0.1 "
+            f"network_mode: {value!r} is not supported "
             f"(supported: {', '.join(sorted(SUPPORTED_NETWORK_MODES))}) - "
-            "network is deny by construction")
+            "network is deny by construction unless allowlist is selected")
     return value
 
 

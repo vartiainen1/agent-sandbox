@@ -26,7 +26,7 @@ any unexpected variable, missing variable, or incorrect value is a refusal
 (never "the assignment returned success").
 
 Environment state is pure process state (no syscalls) - sanitization and
-verification interact with neither seccomp (45-syscall allowlist unchanged)
+verification interact with neither seccomp (69-syscall allowlist unchanged)
 nor any earlier stage. The module is Windows import-safe; all mutation goes
 through seams so tests can inject failures deterministically.
 """

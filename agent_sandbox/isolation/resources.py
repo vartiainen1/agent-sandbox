@@ -18,7 +18,7 @@ PID 1 covers the entire workload tree.
 Ordering (mandated item 14 AFTER item 13): the limits are established in
 PID 1 AFTER the seccomp filter (Step 8) is installed. glibc's
 setrlimit(2)/getrlimit(2) map to the prlimit64 syscall, which IS in the
-derived 45-syscall allowlist (syscall-classification.md) - so no filter
+derived 69-syscall allowlist (syscall-classification.md) - so no filter
 change is required and no syscall is added. The Step 9 Docker tests
 exercise exactly this: rlimits established under the installed filter.
 

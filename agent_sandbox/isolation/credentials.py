@@ -17,7 +17,7 @@ on ANY exposure:
   Step 11 sanitized env has exactly the approved six - nothing more);
 - a Unix-socket creation attempt inside the workload must be DENIED
   (seccomp denies the socket syscall class - socket/connect/bind are
-  not in the derived 45-syscall allowlist, policy.md section 3).
+  not in the derived 69-syscall allowlist, policy.md section 3).
 
 Absence-by-boundary is the preferred property; this module's checks are
 the verification of that property, never the enforcement themselves.

@@ -153,11 +153,16 @@ class ConfigValidationTests(unittest.TestCase):
             RuntimeConfig.from_dict(valid_config(resources={
                 **valid_config()["resources"], "cpu_seconds": True}))
 
-    def test_allowlist_network_mode_rejected_in_v01(self):
-        # v0.2 feature - must not be accepted while unenforceable (S-021)
+    def test_allowlist_network_mode_accepted(self):
+        # v0.2 feature - now accepted as a valid network mode
+        cfg = RuntimeConfig.from_dict(valid_config(network_mode="allowlist"))
+        self.assertEqual(cfg.network_mode, "allowlist")
+
+    def test_unsupported_network_mode_rejected(self):
+        # Only "deny" and "allowlist" are supported
         with self.assertRaises(ConfigError) as cm:
-            RuntimeConfig.from_dict(valid_config(network_mode="allowlist"))
-        self.assertIn("not supported in v0.1", str(cm.exception))
+            RuntimeConfig.from_dict(valid_config(network_mode="bogus"))
+        self.assertIn("not supported", str(cm.exception))
 
     def test_env_allowlist_invalid_entries_rejected(self):
         with self.assertRaises(ConfigError):

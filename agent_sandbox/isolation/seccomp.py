@@ -62,6 +62,7 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 # struct seccomp_data offsets (kernel ABI)
 _OFF_ARCH = 4
 _OFF_NR = 0
+_OFF_ARGS0 = 16  # args[0] — first syscall argument (e.g. socket domain)
 
 # BPF instruction encoding (kernel ABI)
 _BPF_LD = 0x00
@@ -73,6 +74,17 @@ _BPF_K = 0x00
 _BPF_RET = 0x06
 
 _EPERM = 1
+
+# Socket domain argument values for argument-level filtering.
+# socket(AF_INET) and socket(AF_INET6) are allowed for proxy
+# communication; all other domains (AF_UNIX, AF_NETLINK, AF_PACKET, etc.)
+# are denied to preserve S-003/S-004 credential isolation.
+_AF_UNIX = 1
+_AF_INET = 2
+_AF_INET6 = 10
+_AF_NETLINK = 16
+_AF_PACKET = 17
+_SOCKET_NR = 41  # x86_64 syscall number for socket(2) (reference only)
 
 # The x86_64 syscall numbers for the derived allowlist (kernel ABI;
 # cross-checked with the derivation probe's SYS table). The runtime only
@@ -215,9 +227,33 @@ def build_program(allowlist: list[str] | None = None) -> tuple:
     """Build the default-deny BPF program as a fork-safe tuple of
     (code, jt, jf, k) instructions. Architecture mismatch => KILL; a
     non-allowlisted syscall => RET_ERRNO|EPERM; allowlisted => ALLOW.
-    Deterministic layout (pinned by tests). Must be called on the host
-    side (the allowlist artifact is not reachable inside the pivoted
-    rootfs); the program tuple is inherited across fork into PID 1."""
+
+    v0.2: the ``socket`` syscall receives argument-level filtering.
+    After matching the socket syscall number the filter loads args[0]
+    (the domain) and allows only AF_INET (2) and AF_INET6 (10). All
+    other domains (AF_UNIX, AF_NETLINK, AF_PACKET, etc.) are denied
+    with EPERM. This preserves S-003/S-004 credential isolation while
+    permitting the sandbox-to-proxy AF_INET communication.
+
+    Layout (deterministic, pinned by tests)::
+
+        [0]    LD.W.Arch          (load seccomp_data.arch)
+        [1]    JEQ.K audit, +1    (architecture match)
+        [2]    RET.K  KILL        (architecture mismatch => kill)
+        [3]    LD.W.NR            (load seccomp_data.nr)
+        [4..4+N-1]  JEQ chain    (N = len(allowlist); socket entry
+                                   jumps to the domain sub-chain)
+        [4+N]  LD.W.ABS 16        (socket sub-chain: load args[0])
+        [4+N+1] JEQ.K 2, +2      (AF_INET  => ALLOW)
+        [4+N+2] JEQ.K 10, +1     (AF_INET6 => ALLOW)
+        [4+N+3] RET.K  ERRNO|EPERM  (other socket domains => deny;
+                                     also serves as default deny for
+                                     non-allowlisted syscalls)
+        [4+N+4] RET.K  ALLOW     (allowlisted syscalls + AF_INET/6)
+
+    Must be called on the host side (the allowlist artifact is not
+    reachable inside the pivoted rootfs); the program tuple is
+    inherited across fork into PID 1."""
     arch = _detect_arch()
     if allowlist is not None:
         # Explicit allowlist: use the x86_64 table for backward compat
@@ -233,16 +269,50 @@ def build_program(allowlist: list[str] | None = None) -> tuple:
             "allowlist contains syscalls with no number in the "
             f"{arch} runtime table: {unknown} - fail closed, workload "
             "not executed")
+    N = len(allowlist)  # number of allowlisted syscalls
+    # Arch-aware socket trigger: the domain sub-chain must fire for the
+    # socket syscall number of THIS architecture (x86_64: 41, aarch64:
+    # 198), never a hardcoded x86_64 constant - a hardcoded 41 would let
+    # the aarch64 socket entry jump straight to ALLOW and silently drop
+    # the AF_UNIX/AF_NETLINK/AF_PACKET denial (S-003/S-004 loss).
+    socket_nr = numbers.get("socket")
+    # RET_ALLOW sits at position 4 + N + 4 (after header, JEQ chain,
+    # socket sub-chain, and default-deny).
+    ret_allow_idx = 4 + N + 4
     insns: list[tuple[int, int, int, int]] = [
         (_BPF_LD | _BPF_W | _BPF_ABS, 0, 0, _OFF_ARCH),
         (_BPF_JMP | _BPF_JEQ | _BPF_K, 1, 0, audit),
         (_BPF_RET | _BPF_K, 0, 0, SECCOMP_RET_KILL_PROCESS),
         (_BPF_LD | _BPF_W | _BPF_ABS, 0, 0, _OFF_NR),
     ]
-    allow_idx = 4 + len(allowlist) + 1  # position of the trailing RET ALLOW
+    # Build the linear JEQ chain.  The socket syscall entry is special:
+    # instead of jumping to RET_ALLOW, it jumps to the domain sub-chain
+    # (right after the JEQ chain) that loads args[0] and checks the
+    # socket domain.
+    socket_sub_chain_idx = 4 + N  # first instruction of the sub-chain
     for name in allowlist:
-        insns.append((_BPF_JMP | _BPF_JEQ | _BPF_K,
-                      allow_idx - (len(insns) + 1), 0, numbers[name]))
+        nr = numbers[name]
+        if nr == socket_nr:
+            # Socket: jump to domain sub-chain (load args[0], check
+            # AF_INET/AF_INET6).  The sub-chain starts at
+            # socket_sub_chain_idx.  BPF jump offset is relative to the
+            # NEXT instruction (current + 1 + jt), so subtract (len+1).
+            jt = socket_sub_chain_idx - (len(insns) + 1)
+            insns.append((_BPF_JMP | _BPF_JEQ | _BPF_K, jt, 0, nr))
+        else:
+            # Normal syscall: jump straight to RET_ALLOW.
+            jt = ret_allow_idx - (len(insns) + 1)
+            insns.append((_BPF_JMP | _BPF_JEQ | _BPF_K, jt, 0, nr))
+    # Socket domain sub-chain: load args[0] (the domain argument) and
+    # allow only AF_INET and AF_INET6.  All other domains (AF_UNIX,
+    # AF_NETLINK, AF_PACKET, etc.) fall through to the default deny.
+    insns.append((_BPF_LD | _BPF_W | _BPF_ABS, 0, 0, _OFF_ARGS0))
+    insns.append((_BPF_JMP | _BPF_JEQ | _BPF_K,
+                  ret_allow_idx - (len(insns) + 1), 0, _AF_INET))
+    insns.append((_BPF_JMP | _BPF_JEQ | _BPF_K,
+                  ret_allow_idx - (len(insns) + 1), 0, _AF_INET6))
+    # Default deny: applies to non-allowlisted syscalls AND denied
+    # socket domains (AF_UNIX, AF_NETLINK, AF_PACKET, etc.).
     insns.append((_BPF_RET | _BPF_K, 0, 0, SECCOMP_RET_ERRNO | _EPERM))
     insns.append((_BPF_RET | _BPF_K, 0, 0, SECCOMP_RET_ALLOW))
     return tuple(insns)
@@ -319,15 +389,28 @@ def verify_seccomp_state() -> SeccompState:
 
 
 def _check_enforcement() -> None:
-    """Behavioral spot check AFTER install: a forbidden syscall (socket)
+    """Behavioral spot check AFTER install: a forbidden syscall (socketpair)
     must fail with EPERM. If it succeeds, the filter is not enforcing -
     an unexpected state -> refusal. Uses the Python socket module (the
     syscall is denied by the allowlist). Note: socket is imported at
     module level so the (already-loaded) module is inherited into PID 1
-    - a lazy import could not resolve inside the pivoted minimal rootfs."""
+    - a lazy import could not resolve inside the pivoted minimal rootfs.
+
+    v0.2: socket(AF_INET, SOCK_STREAM) is now allowed for proxy
+    communication, so we probe socketpair() instead (still denied in
+    both deny and allowlist modes)."""
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.close()
+        # AF_UNIX may not be defined on all platforms (Windows).
+        # Use the numeric value directly as a fallback.
+        _AF_UNIX_val = getattr(socket, 'AF_UNIX', 1)
+        try:
+            s1, s2 = socket.socketpair(_AF_UNIX_val, socket.SOCK_STREAM)
+        except ValueError:
+            # Windows: socketpair only supports AF_INET/AF_INET6.
+            # Use AF_INET socketpair as a proxy for filter enforcement.
+            s1, s2 = socket.socketpair(socket.AF_INET, socket.SOCK_STREAM)
+        s1.close()
+        s2.close()
     except OSError as e:
         if e.errno == _EPERM:
             return
@@ -337,7 +420,7 @@ def _check_enforcement() -> None:
             "workload not executed") from e
     raise NamespaceSetupError(
         "forbidden syscall probe SUCCEEDED - the filter is not enforcing "
-        "(socket allowed), fail closed, workload not executed")
+        "(socketpair allowed), fail closed, workload not executed")
 
 
 def establish_and_verify(program: tuple) -> SeccompState:

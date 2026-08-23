@@ -48,7 +48,7 @@ capabilities, including inside its own user namespace (the Step 5
 lo-toggle residual is resolved here: CAP_NET_ADMIN is gone). This
 happens AFTER no_new_privs (mandated order) and before the workload fn.
 
-Step 8 (seccomp, S-011, ADR-008): the derived 45-syscall default-deny
+Step 8 (seccomp, S-011, ADR-008): the derived 69-syscall default-deny
 filter (allowlist.json - the regression-protected artifact) is built
 host-side in child A BEFORE entering the boundary (the artifact is not
 reachable inside the pivoted rootfs), then installed in PID 1 as the
@@ -266,7 +266,8 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                    cgroup_session=None,
                    env_allowlist: tuple[str, ...] | None = None,
                    output_mb: int | None = None,
-                   wall_time_seconds: int | None = None
+                   wall_time_seconds: int | None = None,
+                   network_mode: str = "deny",
                    ) -> SandboxRun:
     """Run ``fn`` inside the full sandbox boundary.
 
@@ -346,6 +347,12 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     # the supervisor the SOLE writer (child A and grand close their write
     # copies), so a supervisor exit is EOF to grand's wait.
     go_r, go_w = os.pipe()
+    # Net-ready pipe (v0.2 allowlist): the supervisor signals sandbox PID 1
+    # that the veth pair has been created and moved into the sandbox's
+    # network namespace, so PID 1 can configure its side and verify the
+    # allowlist network state. Only used when network_mode="allowlist";
+    # in deny mode this pipe is closed immediately by all parties.
+    net_ready_r, net_ready_w = os.pipe()
     _flush_io_before_fork()
     pid = os.fork()
     if pid == 0:
@@ -379,6 +386,8 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             os.close(pivot_done_r)
             os.close(go_r)
             os.close(go_w)
+            os.close(net_ready_r)
+            os.close(net_ready_w)
             # Report sandbox PID 1 to the supervisor at the EARLIEST safe
             # point (right after the fork, before the pivot): the HARDENED
             # supervisor joins it into the session cgroup host-side before
@@ -401,6 +410,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             os.close(mount_ack_r)
             os.close(pivot_done_w)
             os.close(go_w)
+            os.close(net_ready_w)
             # PID 1 mounts + verifies the sandbox proc view at the rootfs
             # /proc BEFORE the setup child pivots (/proc with hidepid=2 -
             # a procfs mount shows the PID namespace of the process that
@@ -461,13 +471,30 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                     fs_state = fs_mod._verify_root_boundary(
                         rootfs_state, toolchain)
                     _mount_and_verify_proc()
-                net_mod.verify_deny_by_construction(
-                    state.host_ns.get("net", ""))
+                # v0.2 allowlist network: wait for the supervisor to create
+                # the veth pair and move one end into the sandbox's netns,
+                # then configure the sandbox side and verify the allowlist
+                # state. In deny mode: close the unused pipe and verify the
+                # deny-by-construction state (existing v0.1 behavior).
+                if network_mode == "allowlist":
+                    if not _sync_wait(net_ready_r, "veth setup"):
+                        raise NamespaceSetupError(
+                            "veth setup did not complete (no supervisor "
+                            "net-ready signal) - fail closed, workload "
+                            "not executed")
+                    os.close(net_ready_r)
+                    net_mod.setup_allowlist_network_from_sandbox()
+                    net_mod.verify_allowlist_network(
+                        state.host_ns.get("net", ""))
+                else:
+                    os.close(net_ready_r)
+                    net_mod.verify_deny_by_construction(
+                        state.host_ns.get("net", ""))
                 # Step 6: no_new_privs established + kernel-state read-back
                 # verified BEFORE the workload fn. Step 7: capability
                 # reduction (full bounding-set drop + cleared sets) after
                 # no_new_privs, verified by read-back. Step 8: the derived
-                # 45-syscall default-deny seccomp filter is installed LAST
+                # 69-syscall default-deny seccomp filter is installed LAST
                 # and verified (Seccomp=2 read-back + socket->EPERM spot
                 # check). The workload cannot execute on an unverified
                 # privilege/syscall state (fail closed).
@@ -505,7 +532,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 # control-socket path may be reachable, no
                 # socket/credential env variable may have survived, and
                 # Unix-socket creation must be DENIED by the installed
-                # filter (socket class not in the 45-syscall allowlist).
+                # filter (socket class not in the 69-syscall allowlist).
                 # Any exposure refuses before the workload fn.
                 if fs_state is not None:
                     cred_mod.verify_credential_isolation(
@@ -572,6 +599,37 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
         sandbox_pid1 = int(raw.strip().split()[0])
     except (ValueError, IndexError):
         sandbox_pid1 = -1  # child A died before reporting - fail closed
+    # v0.2 allowlist network: create the veth pair and move one end into
+    # the sandbox's netns. This MUST happen AFTER the sandbox child has
+    # entered its netns (reported its PID) and BEFORE the go signal.
+    # The supervisor creates the pair in the host netns, moves the
+    # sandbox-side end into the sandbox's netns via the sandbox PID, and
+    # configures the host-side end. The sandbox child then configures its
+    # side and verifies the allowlist network state.
+    if network_mode == "allowlist":
+        if sandbox_pid1 < 1:
+            os.close(net_ready_r)
+            os.write(net_ready_w, b"0")
+            os.close(net_ready_w)
+            raise NamespaceSetupError(
+                "veth setup impossible: sandbox PID 1 unknown - fail closed,"
+                " workload not executed")
+        try:
+            net_mod.setup_allowlist_veth(sandbox_pid1)
+            os.write(net_ready_w, b"1")
+        except BaseException as e:
+            try:
+                os.write(net_ready_w, b"0")
+            except OSError:
+                pass
+            raise NamespaceSetupError(
+                f"veth setup failed: {e} - fail closed, workload not executed")
+        finally:
+            os.close(net_ready_w)
+            os.close(net_ready_r)
+    else:
+        os.close(net_ready_r)
+        os.close(net_ready_w)
     # HARDENED (S-012/S-027, ADR-007): the supervisor joins sandbox PID 1
     # into the session cgroup HOST-SIDE, BEFORE the workload fn may run.
     # The sandbox rootfs has no /sys by design (ADR-005), so PID 1 cannot
@@ -669,6 +727,10 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             os.close(out_r)
         except OSError:
             pass
+        # v0.2: best-effort cleanup of the host-side veth pair. The
+        # sandbox-side veth disappears when the sandbox netns is destroyed.
+        if network_mode == "allowlist":
+            net_mod.cleanup_veth_pair()
 
 
 def _finish_run(status: int, text: str, sandbox_pid1: int,
@@ -1122,7 +1184,7 @@ def _privileges_guard(config) -> StageCheck:
 
 
 def seccomp_probe(config) -> StageCheck:
-    """Real-path probe of the SECCOMP mechanism (the derived 45-syscall
+    """Real-path probe of the SECCOMP mechanism (the derived 69-syscall
     default-deny filter built host-side, installed in PID 1 after
     no_new_privs + capability reduction, kernel-state read-back + socket
     EPERM spot check), run in a forked child so the supervisor never
@@ -1175,7 +1237,7 @@ def _seccomp_probe_impl(config) -> StageCheck:
     if msg == "OK":
         return StageCheck(
             ok=True,
-            reason="derived 46-syscall default-deny seccomp filter built "
+            reason="derived 69-syscall default-deny seccomp filter built "
                    "from allowlist.json, installed LAST in PID 1 after "
                    "no_new_privs + capability reduction, kernel-state "
                    "read-back verified (Seccomp mode = SECCOMP_MODE_FILTER, "

@@ -176,22 +176,69 @@ class SeccompHostTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_build_program_layout(self):
-        # Deterministic default-deny layout: arch guard first (KILL on
-        # mismatch), then the JEQ allow chain, default RET_ERRNO|EPERM
-        # BEFORE the trailing RET ALLOW (policy.md section 1).
+        # Deterministic default-deny layout with socket domain filtering:
+        # arch guard first (KILL on mismatch), then the JEQ allow chain,
+        # socket domain sub-chain (LD.W.ABS args[0], JEQ AF_INET,
+        # JEQ AF_INET6), default RET_ERRNO|EPERM, trailing RET ALLOW.
+        # (policy.md section 1; v0.2 socket argument-level filtering.)
         prog = sc_mod.build_program(EXPECTED_ALLOWLIST)
-        self.assertEqual(len(prog), 4 + 69 + 2)
+        # 4 (header) + 69 (JEQ chain) + 3 (socket sub-chain) + 1 (deny) + 1 (allow)
+        self.assertEqual(len(prog), 4 + 69 + 5)
         self.assertEqual(prog[0], (0x20, 0, 0, sc_mod._OFF_ARCH))       # LD arch
         self.assertEqual(prog[1], (0x15, 1, 0, sc_mod.AUDIT_ARCH_X86_64))  # JEQ arch
         self.assertEqual(prog[2], (0x06, 0, 0, sc_mod.SECCOMP_RET_KILL_PROCESS))
         self.assertEqual(prog[3], (0x20, 0, 0, sc_mod._OFF_NR))         # LD nr
         self.assertEqual(prog[-2], (0x06, 0, 0, sc_mod.SECCOMP_RET_ERRNO | 1))
         self.assertEqual(prog[-1], (0x06, 0, 0, sc_mod.SECCOMP_RET_ALLOW))
-        # Every JEQ's jump target lands exactly on the trailing ALLOW.
-        for insn in prog[4:-2]:
-            self.assertEqual(insn[0], 0x15, "allow checks must be JEQ")
-            target = len(prog) - 1  # index of RET ALLOW
-            self.assertEqual(insn[1], target - (prog.index(insn) + 1))
+        # Socket domain sub-chain: LD.W.ABS 16, JEQ AF_INET, JEQ AF_INET6
+        sc_start = 4 + 69  # sub-chain starts after JEQ chain
+        self.assertEqual(prog[sc_start], (0x20, 0, 0, sc_mod._OFF_ARGS0))  # LD args[0]
+        self.assertEqual(prog[sc_start + 1][3], sc_mod._AF_INET)           # JEQ AF_INET
+        self.assertEqual(prog[sc_start + 2][3], sc_mod._AF_INET6)          # JEQ AF_INET6
+        # Non-socket JEQ entries jump to RET ALLOW (last instruction).
+        for i in range(4, 4 + 69):
+            insn = prog[i]
+            if insn[0] != 0x15:
+                continue  # skip non-JEQ (shouldn't happen)
+            nr = insn[3]
+            if nr == sc_mod._SOCKET_NR:
+                # Socket entry jumps to sub-chain
+                self.assertEqual(insn[1], sc_start - (i + 1))
+            else:
+                # Normal entry jumps to RET ALLOW
+                target = len(prog) - 1
+                self.assertEqual(insn[1], target - (i + 1))
+
+    def test_build_program_aarch64_socket_domain_filter(self):
+        # v0.2 Step 2 regression: the socket domain sub-chain must fire on
+        # aarch64 TOO. socket is syscall 198 there (not x86_64's 41); a
+        # hardcoded x86_64 trigger would let the aarch64 socket entry jump
+        # straight to ALLOW and silently drop the AF_UNIX/AF_NETLINK/
+        # AF_PACKET denial (S-003/S-004 loss). Built host-side from the
+        # aarch64 artifact with _detect_arch patched (no aarch64 hardware
+        # required); only the BPF construction is asserted.
+        with unittest.mock.patch.object(sc_mod, "_detect_arch",
+                                        return_value="aarch64"):
+            allow, numbers = sc_mod.load_allowlist("aarch64")
+            self.assertEqual(numbers["socket"], 198)
+            # No-arg build: the runtime path loads the aarch64 artifact
+            # INCLUDING its numbers table (the explicit-allowlist path is
+            # x86_64-back-compat and would use the wrong numbers).
+            prog = sc_mod.build_program()
+        N = len(allow)
+        sc_start = 4 + N  # domain sub-chain after the JEQ chain
+        # The aarch64 socket JEQ entry must jump to the sub-chain, not ALLOW.
+        socket_hits = [i for i in range(4, 4 + N)
+                       if prog[i][0] == 0x15 and prog[i][3] == numbers["socket"]]
+        self.assertEqual(len(socket_hits), 1,
+                         "exactly one aarch64 socket JEQ entry")
+        self.assertEqual(prog[socket_hits[0]][1], sc_start - (socket_hits[0] + 1),
+                         "aarch64 socket entry must jump to the domain sub-chain")
+        # Sub-chain contents are arch-independent (domain values are the
+        # same on every architecture).
+        self.assertEqual(prog[sc_start], (0x20, 0, 0, sc_mod._OFF_ARGS0))
+        self.assertEqual(prog[sc_start + 1][3], sc_mod._AF_INET)
+        self.assertEqual(prog[sc_start + 2][3], sc_mod._AF_INET6)
 
     def test_build_unknown_syscall_refuses(self):
         with self.assertRaises(NamespaceSetupError) as cm:
@@ -282,8 +329,13 @@ class SeccompHostTests(unittest.TestCase):
             def close(self):
                 return None
 
+        def fake_socketpair(*args, **kwargs):
+            return (FakeSocket(), FakeSocket())
+
         with unittest.mock.patch.object(sc_mod.socket, "socket",
-                                        return_value=FakeSocket()):
+                                        return_value=FakeSocket()), \
+             unittest.mock.patch.object(sc_mod.socket, "socketpair",
+                                        side_effect=fake_socketpair):
             with self.assertRaises(NamespaceSetupError) as cm:
                 sc_mod._check_enforcement()
         self.assertIn("not enforcing", str(cm.exception))
@@ -354,18 +406,22 @@ class SeccompBoundaryTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_forbidden_syscall_denied(self):
-        # Representative forbidden syscalls: socket (network class) and
-        # prctl (privilege class) must fail EPERM under the filter.
+        # Representative forbidden syscalls: socketpair (network class)
+        # and prctl (privilege class) must fail EPERM under the filter.
+        # v0.2: socket(AF_INET) is now allowed for proxy communication,
+        # so we probe socketpair instead (still denied).
         # (socket is imported at module level so the loaded module is
         # inherited into PID 1 - the minimal rootfs has no stdlib.)
         def fn(state, fs):
             results = {}
             try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.close()
-                results["socket"] = "OK"
+                s1, s2 = socket.socketpair(socket.AF_UNIX,
+                                           socket.SOCK_STREAM)
+                s1.close()
+                s2.close()
+                results["socketpair"] = "OK"
             except OSError as e:
-                results["socket"] = f"errno:{e.errno}"
+                results["socketpair"] = f"errno:{e.errno}"
             try:
                 priv_mod._prctl(priv_mod.PR_GET_NO_NEW_PRIVS)
                 results["prctl"] = "OK"
@@ -374,7 +430,8 @@ class SeccompBoundaryTests(unittest.TestCase):
             return json.dumps(results)
 
         data = json.loads(_run(fn, self.rootfs_state()))
-        self.assertEqual(data["socket"], "errno:1", "socket must fail EPERM")
+        self.assertEqual(data["socketpair"], "errno:1",
+                         "socketpair must fail EPERM")
         self.assertEqual(data["prctl"], "errno:1", "prctl must fail EPERM")
 
     @skip_unless_linux
@@ -417,22 +474,27 @@ class SeccompBoundaryTests(unittest.TestCase):
         # The filter is inherited across execve: an exec'd helper (a fresh
         # interpreter) still gets EPERM on a forbidden syscall. Runs in
         # the namespaces-only sandbox so the interpreter path resolves.
+        # v0.2: socket(AF_INET) is now allowed, so we probe socketpair
+        # (still denied) to verify filter inheritance.
         helper = (
             "import socket\n"
             "try:\n"
-            "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
-            "    print('SOCKET_OK')\n"
+            "    s1, s2 = socket.socketpair(socket.AF_UNIX,\n"
+            "                               socket.SOCK_STREAM)\n"
+            "    s1.close()\n"
+            "    s2.close()\n"
+            "    print('SOCKETPAIR_OK')\n"
             "except OSError as e:\n"
-            "    print('SOCKET_EPERM:%d' % e.errno)\n"
+            "    print('SOCKETPAIR_EPERM:%d' % e.errno)\n"
         )
 
         def fn(state):
             os.execv(sys.executable, [sys.executable, "-c", helper])
 
         run = setup.run_in_sandbox(fn)
-        self.assertIn("SOCKET_EPERM:1", run.output,
+        self.assertIn("SOCKETPAIR_EPERM:1", run.output,
                       "the exec'd helper must still be under the filter")
-        self.assertNotIn("SOCKET_OK", run.output)
+        self.assertNotIn("SOCKETPAIR_OK", run.output)
 
     @skip_unless_linux
     def test_nnp_and_caps_preserved_under_filter(self):

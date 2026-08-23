@@ -1499,3 +1499,88 @@ _X86_64 table updated. check_trace_regression.py expected counts
 updated. Behavioral probe updated (socketpair replaces socket as
 denied-test). All derivation tests pass (18/18). Full unit suite
 passes (761/761).
+
+---
+
+## v0.2 Step 2 — allowlist network plumbing + socket domain filtering (2026-08-23)
+
+### Scope of this record
+
+v0.2 Step 2 adds the plumbing for `network_mode="allowlist"`:
+
+- A **veth pair** (`veth-sbx-h` / `veth-sbx-s`) created host-side by the
+  supervisor, one end moved into the sandbox's netns, configured as a
+  private /31 point-to-point link (`10.255.254.0/31`, sandbox `.1`,
+  host `.0`), with a default route in the sandbox pointing at the host
+  endpoint. `setup_allowlist_veth()` (supervisor side),
+  `setup_allowlist_network_from_sandbox()` (sandbox PID 1 side),
+  `verify_allowlist_network()` (exactly `{lo, veth-sbx-s}`, lo DOWN,
+  veth UP, sandbox IP present, default route present, netns distinct
+  from host), `cleanup_veth_pair()` (best-effort teardown, host side).
+- **Socket argument-level filtering** in the seccomp BPF: `socket` is
+  allowlisted but restricted to `AF_INET` (2) / `AF_INET6` (10); every
+  other domain (`AF_UNIX`/`AF_NETLINK`/`AF_PACKET`/…) is denied EPERM
+  (policy.md §3, §5; syscall-classification.md §1.6). Seccomp count is
+  UNCHANGED: 69 = tier0 29 + tier1 40.
+- `network_mode` config accepted: `deny` (default, unchanged) and
+  `allowlist`. `run_in_sandbox(network_mode=...)` wires the veth setup
+  between the netns creation and the go signal; deny mode is
+  byte-for-byte the existing path.
+
+### What is NOT implemented yet (explicit, outstanding)
+
+- **The validating proxy itself does not exist.** No host-side process
+  listens on the host veth endpoint; no destination validation,
+  allowlist matching, or forwarding exists. The veth path is plumbing
+  only.
+- **Host-side iptables/nftables destination restrictions are NOT
+  implemented.** There is no firewall rule that restricts which
+  destinations the host endpoint may forward to.
+- Consequently `network_mode="allowlist"` currently produces a sandbox
+  with a default route into a dead host endpoint — no workload can
+  reach any external destination today. The mode exists so the plumbing
+  and its verification are in place and honest; it is NOT a working
+  outbound-network mode yet. These are later Step 2 substeps, recorded
+  as outstanding work (see the v0.2 Step 2 runbook).
+
+### Host-side verification (this substrate)
+
+- `test_network_veth.py` — 19 tests: allowlist config accepted / deny
+  default / unsupported mode rejected; veth constants (name length,
+  RFC1918 /31 subnet, IPs in-subnet); fail-closed paths (`_get_ifindex`
+  missing interface, `ip` missing → NamespaceSetupError, non-zero `ip`
+  exit, `_run_ip` timeout); `verify_allowlist_network` refuses on
+  unexpected interfaces. **PASS (1 documented skip: the root-required
+  integration test, see below).**
+- `test_seccomp.py` — 31 tests: deterministic BPF layout now pins the
+  4+69+3+1+1 structure, the domain sub-chain (LD.W.ABS 16, JEQ AF_INET,
+  JEQ AF_INET6), the socket JEQ entry jumping to the sub-chain, and all
+  other JEQ entries jumping to RET ALLOW; the enforcement spot check
+  now probes `socketpair()` (denied) instead of `socket()` (allowed).
+  **PASS (14 documented Linux-gated skips on this substrate).**
+- `test_network.py` — the v0.1 deny-by-construction suite updated for
+  v0.2 semantics: `socket(AF_INET)` creation is allowed but every
+  `connect()` fails (no route / no listener); `bind` remains denied by
+  seccomp; the workload cannot bring lo up (no CAP_NET_ADMIN), cannot
+  add routes/interfaces, and cannot escape to a host netns. **PASS**
+  (real-boundary cases are Linux-gated).
+- `test_skeleton.py` — config: allowlist accepted, only deny/allowlist
+  supported. **PASS.**
+- Full unit discover: **781 tests, 0 failures, 273 documented skips**
+  (Linux-gated real-boundary tests + the root-required veth test).
+
+### Native verification status
+
+- **Reported completed on the native Ubuntu 24.04 / kernel 6.8 / x86_64
+  VM** (prior session): `VethIntegrationTests` (`test_create_and_
+  cleanup_veth_pair`) passes under `sudo` (root), creating the pair,
+  verifying both ends exist via `/sys/class/net`, and cleaning up.
+- **Root requirement (documented, preserved):** the veth integration
+  test requires root (`os.geteuid() != 0` → skip) because veth-pair
+  creation needs `CAP_NET_ADMIN` in the initial user namespace. It is
+  SKIPPED (never silently passed) when run unprivileged.
+- **Pre-existing root-premise failure (unchanged, not converted):**
+  `test_host_caller_remains_unprivileged` asserts a non-root caller and
+  fails only because the native run is root — an environment-premise
+  result, not a sandbox boundary failure. Its classification is
+  preserved exactly as documented above (line 1313 of this file).

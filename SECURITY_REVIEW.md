@@ -248,8 +248,8 @@ and enforced? Is the allowlist minimal and complete?
 **Relevant source files:**
 - `agent_sandbox/isolation/seccomp.py` — filter installation
 - `agent_sandbox/isolation/syscalls.py` — syscall constants
-- `tools/seccomp-derivation/allowlist.json` — the 46-syscall allowlist
-- `tools/seccomp-derivation/allowlist_aarch64.json` — aarch64 allowlist (43 syscalls)
+- `tools/seccomp-derivation/allowlist.json` — the 69-syscall allowlist
+- `tools/seccomp-derivation/allowlist_aarch64.json` — aarch64 allowlist (66 syscalls)
 - `tools/seccomp-derivation/check_trace_regression.py` — regression gate
 - `tools/seccomp-derivation/probe_policy.py` — behavioral probe
 - `tools/seccomp-derivation/trace_workloads.py` — workload tracing
@@ -279,9 +279,9 @@ and enforced? Is the allowlist minimal and complete?
 - Confirm the filter is installed AFTER all other setup
 - Confirm the filter inherits to child processes via fork/exec
 - Confirm the default action is EPERM (deny)
-- Confirm socket/ptrace/mount/chroot/unshare/clone are denied
-- Review the 46-syscall allowlist for completeness and minimality
-- Review the aarch64 allowlist (43 syscalls) — note: filter installation/enforcement is NOT VERIFIED on aarch64
+- Confirm ptrace/mount/chroot/unshare/clone/socketpair are denied, and that `socket` is argument-filtered to AF_INET/AF_INET6 (all other domains EPERM — v0.2 Step 2)
+- Review the 69-syscall allowlist for completeness and minimality
+- Review the aarch64 allowlist (66 syscalls) — note: filter installation/enforcement is NOT VERIFIED on aarch64
 
 ---
 
@@ -565,7 +565,7 @@ python tools/seccomp-derivation/trace_workloads.py --out /tmp/trace.json
 python tools/seccomp-derivation/check_trace_regression.py /tmp/trace.json
 ```
 
-Expected: PASS — allowlist exactly 46, no undocumented expansion.
+Expected: PASS — allowlist exactly 69 (tier0 29 + tier1 40), no undocumented expansion.
 
 ### 5.8 Seccomp behavioral probe (requires Linux)
 
@@ -574,7 +574,7 @@ cd agent-sandbox
 python tools/seccomp-derivation/probe_policy.py
 ```
 
-Expected: allowed syscalls pass, denied syscalls (socket, ptrace, mount, etc.) return EPERM.
+Expected: allowed syscalls pass; denied syscalls (socketpair, ptrace, mount, etc.) return EPERM; `socket` is allowed only for AF_INET/AF_INET6 (other domains EPERM — v0.2 Step 2 domain filter).
 
 ### 5.9 Static analysis
 

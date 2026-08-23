@@ -280,12 +280,22 @@ root filesystem built by the supervisor:
   endpoints, e.g. `169.254.169.254`), SSRF, DNS rebinding, and Unix-socket
   escapes to host services are unreachable (S-004): the docker socket and
   any host socket path simply do not exist in the rootfs.
-- **Explicit allowlists are deferred to v0.2** (design §12, §13). When they
-  arrive they must be enforced inside the network namespace (interface +
-  routing + a host-side proxy with destination validation), never by
-  hostname allowlists alone, and must account for DNS resolution, redirects,
-  alternate address forms, and DNS rebinding (security spec §8). Until then,
-  network = none.
+- **Explicit allowlists are a v0.2 feature** (design §12, §13). v0.2
+  Step 2 has implemented the *plumbing*: `network_mode="allowlist"`
+  creates a veth pair (`veth-sbx-h` / `veth-sbx-s`), moves the sandbox
+  end into the sandbox netns, configures a private /31 point-to-point
+  link (sandbox `10.255.254.1`, host `10.255.254.0`), sets a default
+  route in the sandbox toward the host endpoint, verifies the allowlist
+  netns state, and cleans the pair up on teardown. `socket` is
+  allowlisted but argument-filtered to AF_INET/AF_INET6 so S-003/S-004
+  Unix-socket isolation is preserved. **The host-side validating proxy
+  and the iptables/nftables destination enforcement are NOT yet
+  implemented** (outstanding v0.2 Step 2 substeps) — the intended design
+  remains: enforcement inside the network namespace (interface + routing
+  + a host-side proxy with destination validation), never by hostname
+  allowlists alone, accounting for DNS resolution, redirects, alternate
+  address forms, and DNS rebinding (security spec §8). Until the proxy
+  lands, `network_mode="allowlist"` provides no outbound networking.
 
 ---
 

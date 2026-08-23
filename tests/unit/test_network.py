@@ -18,13 +18,11 @@ Empirical facts this suite pins:
   refuses on any deviation).
 - Step 7 (capability reduction) removed CAP_NET_ADMIN: the workload
   cannot toggle lo.
-- Step 8 (seccomp) denies the ENTIRE socket syscall class at workload
-  time: no network syscall is even possible - socket() fails EPERM. The
-  suite therefore asserts the syscall-level denial plus the structural
-  property (no usable path, no host escape); the netns state itself is
-  verified pre-filter in PID 1. (The Step 5-era ioctl flag reads are no
-  longer possible at workload time - ioctl needs a socket fd, and
-  socket creation is denied.)
+- v0.2 Step 8 (seccomp): socket(AF_INET) is now allowed for proxy
+  communication, but the deny-by-construction netns (no routes, no
+  addresses, lo DOWN) means no connection can succeed. The suite
+  asserts the structural property (no usable path, no host escape);
+  the netns state itself is verified pre-filter in PID 1.
 - The workload cannot reach the host netns (no host pid visible -> no
   host ns fd path; setns/iface-move need initial-userns privileges).
 - Netlink route/iface mutations returned EOPNOTSUPP in the validation
@@ -147,9 +145,8 @@ def _bring_lo_up_inside() -> str:
 
 
 def _try_connect_inside(host: str, port: int) -> str:
-    # The socket creation is INSIDE the try: under the Step 8 seccomp
-    # filter the socket syscall itself fails with EPERM, and that failure
-    # must be recorded (not raised).
+    # v0.2: socket creation is now allowed (for proxy communication),
+    # but the deny-by-construction netns means connect() fails.
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -207,27 +204,32 @@ class NetworkBoundaryTests(unittest.TestCase):
     @skip_unless_linux
     def test_network_denied_at_syscall_level(self):
         # Step 8: seccomp denies the socket syscall class, so at workload
-        # time no network operation is even possible - socket() fails
-        # EPERM (the syscall-level layer over the deny-by-construction
-        # netns, whose state - only lo DOWN, no addresses/routes - is
-        # verified in PID 1 before the filter install and refuses
-        # otherwise). The lo flag-toggle residual is doubly closed: no
-        # CAP_NET_ADMIN (Step 7) and no socket fd to reach ioctl (Step 8).
+        # v0.2: socket(AF_INET) is now allowed for proxy communication,
+        # but the deny-by-construction netns means no connection can
+        # succeed: socket() creates the fd, but connect() fails with
+        # ENETUNREACH (no routes) or ECONNREFUSED (no listeners).
         def fn(state, fs):
             results = {}
             for host in ("8.8.8.8", "127.0.0.1", "169.254.169.254"):
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.close()
-                    results[f"socket_{host}"] = "OK"
+                    try:
+                        s.connect((host, 1))
+                        results[f"connect_{host}"] = "OK"
+                    except OSError as e:
+                        results[f"connect_{host}"] = f"errno:{e.errno}"
+                    finally:
+                        s.close()
                 except OSError as e:
-                    results[f"socket_{host}"] = f"errno:{e.errno}"
+                    results[f"connect_{host}"] = f"errno:{e.errno}"
             return json.dumps(results)
 
         data = json.loads(_run(fn, self.rootfs))
         for label, value in data.items():
-            self.assertEqual(value, "errno:1",
-                             f"{label} must fail EPERM (socket syscall denied)")
+            self.assertIn(value[:6], ("errno:",),
+                         f"{label} must fail (no route in deny-by-construction netns)")
+            self.assertNotEqual(value, "OK",
+                                f"{label} must not succeed (deny-by-construction)")
 
     @skip_unless_linux
     def test_no_non_loopback_interfaces(self):
@@ -293,38 +295,48 @@ class NetworkBoundaryTests(unittest.TestCase):
 
     @skip_unless_linux
     def test_socket_network_path_unusable(self):
-        # Step 8: the socket syscall class is denied, so no socket can
-        # even be created - the strongest "no usable network path" form
-        # (syscall-level, over the deny-by-construction netns). connect,
-        # bind, listen are unreachable because they are unreachable
-        # syscalls; a listener is impossible because creation is denied.
+        # v0.2: socket(AF_INET) is now allowed for proxy communication,
+        # but the deny-by-construction netns means no connection can
+        # succeed (connect fails ENETUNREACH/ECONNREFUSED), and bind/
+        # listen are not in the allowlist (seccomp denied).
         def fn(state, fs):
             results = {}
             for host in ("8.8.8.8", "127.0.0.1", "169.254.169.254"):
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.connect((host, 443))
-                    results[f"connect_{host}"] = "OK"
-                    s.close()
+                    try:
+                        s.connect((host, 443))
+                        results[f"connect_{host}"] = "OK"
+                    except OSError as e:
+                        results[f"connect_{host}"] = f"errno:{e.errno}"
+                    finally:
+                        # Close on EVERY path: a leaked socket emits a
+                        # ResourceWarning at interpreter shutdown in PID 1
+                        # which would pollute the captured output (the
+                        # S-003/S-004 hygiene the sibling test keeps).
+                        s.close()
                 except OSError as e:
                     results[f"connect_{host}"] = f"errno:{e.errno}"
-            try:
-                ln = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                ln.bind(("127.0.0.1", 0))
-                ln.listen(1)
-                ln.close()
-                results["listener"] = "OK"
-            except OSError as e:
-                results["listener"] = f"errno:{e.errno}"
+            # bind/listen are not in the 69-syscall allowlist; the bind
+            # attempt is killed by seccomp before the OSError can be
+            # caught.  Verify this separately below.
             return json.dumps(results)
 
         data = json.loads(_run(fn, self.rootfs))
         for host in ("8.8.8.8", "127.0.0.1", "169.254.169.254"):
-            self.assertEqual(data[f"connect_{host}"], "errno:1",
-                             f"connect to {host} must fail EPERM (socket "
-                             "syscall denied - no usable network path)")
-        self.assertEqual(data["listener"], "errno:1",
-                         "a listener is impossible (socket syscall denied)")
+            self.assertNotEqual(data[f"connect_{host}"], "OK",
+                               f"connect to {host} must fail (deny-by-"
+                               "construction netns - no usable path)")
+        # Verify bind is denied: run a workload that tries bind.  On
+        # seccomp violation the process is killed (exit != 0).
+        def fn_bind(state, fs):
+            ln = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            ln.bind(("127.0.0.1", 0))  # seccomp kills here
+            return "SHOULD_NOT_REACH"
+
+        run = setup.run_in_sandbox(fn_bind, rootfs_state=self.rootfs)
+        self.assertNotEqual(run.exit_code, 0,
+                            "bind must be denied by seccomp")
 
     @skip_unless_linux
     def test_connect_refused_or_unavailable(self):
@@ -335,12 +347,12 @@ class NetworkBoundaryTests(unittest.TestCase):
             })
 
         data = json.loads(_run(fn, self.rootfs))
-        self.assertEqual(data["public"], "errno:1",
-                         "public connect must fail EPERM (socket syscall "
-                         "denied - no usable network path)")
-        self.assertEqual(data["loopback"], "errno:1",
-                         "loopback connect must fail EPERM (socket syscall "
-                         "denied - no usable network path)")
+        self.assertNotEqual(data["public"], "OK",
+                            "public connect must fail (deny-by-construction "
+                            "netns - no usable network path)")
+        self.assertNotEqual(data["loopback"], "OK",
+                            "loopback connect must fail (deny-by-construction "
+                            "netns - no usable network path)")
 
     @skip_unless_linux
     def test_host_network_namespace_unchanged(self):
@@ -366,8 +378,10 @@ class NetworkBoundaryTests(unittest.TestCase):
 
 class WorkloadReenableTests(unittest.TestCase):
     """The workload cannot re-enable networking: Step 7 removed
-    CAP_NET_ADMIN (no lo toggle) and Step 8's seccomp filter denies the
-    entire socket syscall class (no network syscall is even possible).
+    CAP_NET_ADMIN (no lo toggle) and the deny-by-construction netns
+    (no routes, no addresses, lo DOWN) means no usable network path.
+    v0.2: socket(AF_INET) is now allowed for proxy communication, but
+    connect() still fails because the netns has no usable routes.
     The structural property (no usable path, no host escape) holds on
     every substrate. (The tests assert the security boundary, never the
     environment's EOPNOTSUPP artifact.)"""
@@ -396,11 +410,11 @@ class WorkloadReenableTests(unittest.TestCase):
 
         data = json.loads(_run(fn, self.rootfs))
         self.assertEqual(data["attempt"], "errno:1",
-                         "lo-up must fail EPERM (no socket fd under seccomp)")
+                         "lo-up must fail EPERM (no CAP_NET_ADMIN)")
         for label in ("connect_public", "connect_metadata", "connect_host_gw"):
-            self.assertEqual(data[label], "errno:1",
-                             f"{label} must fail EPERM (socket syscall "
-                             "denied) after the workload's lo-up attempt")
+            self.assertNotEqual(data[label], "OK",
+                                f"{label} must fail (deny-by-construction "
+                                "netns) after the workload's lo-up attempt")
 
     @skip_unless_linux
     def test_workload_cannot_add_route(self):
@@ -423,8 +437,8 @@ class WorkloadReenableTests(unittest.TestCase):
         data = json.loads(_run(fn, self.rootfs))
         self.assertEqual(data["v4_routes"], 0,
                          "no usable IPv4 route may exist after the attempt")
-        self.assertEqual(data["connect"], "errno:1",
-                         "connect must still fail EPERM (socket syscall denied)")
+        self.assertNotEqual(data["connect"], "OK",
+                            "connect must fail (deny-by-construction netns)")
 
     @skip_unless_linux
     def test_workload_cannot_create_interface(self):
@@ -481,9 +495,13 @@ class WorkloadReenableTests(unittest.TestCase):
 
         data = json.loads(_run(fn, self.rootfs))
         self.assertEqual(data["attempt"], "errno:1",
-                         "lo-up must fail EPERM (no socket fd under seccomp)")
-        self.assertEqual(data["public"], "errno:1")
-        self.assertEqual(data["host_gw"], "errno:1")
+                         "lo-up must fail EPERM (no CAP_NET_ADMIN)")
+        # v0.2: socket(AF_INET) is allowed but connect fails because the
+        # netns has no usable routes (ENETUNREACH=101) or the gateway is
+        # unreachable (EHOSTUNREACH=113).
+        for label in ("public", "host_gw"):
+            self.assertNotEqual(data[label], "OK",
+                                f"{label} must fail (deny-by-construction)")
 
 
 def _netlink_add_route_inside() -> str:

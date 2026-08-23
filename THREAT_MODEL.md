@@ -341,12 +341,12 @@ away):
 
 | Threat | Invariant | Evidence | Classification |
 |---|---|---|---|
-| T-012 Direct outbound access | S-005 | `test_network.py::NetworkDenyTests` (no usable network path, socket syscall denied); `test_network.py::NetworkPolicyTests` (loopback down) | DOCKER: real netns + socket deny; HOST-SIDE: policy verified |
+| T-012 Direct outbound access | S-005 | `test_network.py::NetworkDenyTests` (deny mode: no usable network path, connect fails; v0.2 Step 2: socket(AF_INET) allowed for the proxy path but every connect fails in the deny-by-construction netns); `test_network.py::NetworkPolicyTests` (loopback down) | DOCKER: real netns + connect-time denial; HOST-SIDE: policy + BPF domain filtering verified |
 | T-013 Metadata endpoint | S-007 | `test_network.py` (169.254.169.254 unreachable by construction -- no network); `test_network.py::NetworkPolicyTests` (explicit connect_metadata probe 169.254.169.254:80 from inside) | DOCKER: real unreachable + explicit metadata probe verified |
 | T-014 Private/link-local ranges | S-006 | `test_network.py` (no usable network path, RFC1918 unreachable); `test_network.py::NetworkPolicyTests` (explicit connect_host_gw 192.168.1.1:80 and host_gw 172.16.0.1:80 probes) | DOCKER: real unreachable + explicit private-range probes verified |
-| T-015 SSRF via redirects | S-006 | **Deferred to v0.2** -- no network in v0.1 | DESIGN INTENT: documented gap; v0.2 must implement |
-| T-016 Unix socket access | S-004 | `test_credentials.py::CredentialSandboxTests` (socket creation denied); `test_credentials.py::SocketCreationTests` (denial verified) | DOCKER: real socket-denied; HOST-SIDE: policy verified |
-| T-017 DNS abuse/rebinding | S-005, S-006 | **Deferred to v0.2** -- no resolver configured | DESIGN INTENT: documented gap |
+| T-015 SSRF via redirects | S-006 | **Deferred to v0.2 proxy** -- no outbound network in v0.1/v0.2-Step-2 (proxy + destination enforcement NOT implemented); the veth plumbing does not forward anything | DESIGN INTENT: documented gap; the validating proxy must implement destination validation (never hostname allowlists alone) |
+| T-016 Unix socket access | S-004 | `test_credentials.py::CredentialSandboxTests` (socket creation denied); `test_credentials.py::SocketCreationTests` (denial verified); v0.2 Step 2: AF_UNIX denied by BPF domain filter even though `socket` is allowlisted | DOCKER: real socket-denied; HOST-SIDE: policy + BPF domain filtering verified |
+| T-017 DNS abuse/rebinding | S-005, S-006 | **Deferred to v0.2 proxy** -- no resolver configured, no outbound network | DESIGN INTENT: documented gap; the proxy must handle DNS/rebinding |
 
 ### 10.3 Credential and secret threats
 

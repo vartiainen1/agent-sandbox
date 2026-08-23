@@ -1,13 +1,18 @@
-"""Network namespace deny-by-construction state (Phase 1 Step 5, ADR-006).
+"""Network namespace configuration (Phase 1 Step 5, ADR-006; v0.2 Step 2).
 
-The sandbox's network namespace (created by unshare(CLONE_NEWNET) in Step
-2) is configured into its final v0.1 state here: loopback DOWN, no
-addresses, no usable routes, no host interfaces, no path out. The kernel
-already provides this as the FRESH-netns default; this module makes the
-intent explicit (ensure lo down), VERIFIES the resulting state (never
-trusts syscall success), and REFUSES on any unexpected element (fail
-closed - an unexpected interface/route/address is a boundary violation,
-never a warning-and-continue).
+v0.1 (deny by construction): The sandbox's network namespace (created by
+unshare(CLONE_NEWNET) in Step 2) is configured into its final v0.1
+state: loopback DOWN, no addresses, no usable routes, no host
+interfaces, no path out. The kernel already provides this as the
+FRESH-netns default; this module makes the intent explicit (ensure lo
+down), VERIFIES the resulting state (never trusts syscall success), and
+REFUSES on any unexpected element (fail closed).
+
+v0.2 (allowlist via validating proxy): When network_mode="allowlist",
+a veth pair is created by the supervisor, one end is moved into the
+sandbox's netns, and the sandbox has a single controlled path to a
+host-side validating proxy. The proxy enforces destination restrictions;
+the sandbox itself never has direct external network access.
 
 Verification sources (empirically chosen, Step 5 probe):
 - /proc/self/net/{dev,route,ipv6_route,fib_trie,if_inet6} - the
@@ -50,6 +55,7 @@ from __future__ import annotations
 import os
 import socket
 import struct
+import subprocess
 from dataclasses import dataclass
 
 try:
@@ -281,3 +287,305 @@ def verify_deny_by_construction(host_netns: str) -> NetworkState:
         ipv4_routes=len(v4_route_lines),
         non_loopback_route_devices=tuple(non_lo),
         netns_distinct_from_host=distinct)
+
+
+# ---------------------------------------------------------------------------
+# v0.2 allowlist network plumbing (veth-pair to validating proxy)
+# ---------------------------------------------------------------------------
+
+# Private /31 point-to-point link for sandbox <-> proxy communication.
+# The /31 prefix provides exactly two usable addresses (RFC 3021).
+_PROXY_SUBNET_PREFIX = "10.255.254"
+_PROXY_SUBNET_MASK = 31
+_SANDBOX_IP = f"{_PROXY_SUBNET_PREFIX}.1/{_PROXY_SUBNET_MASK}"
+_HOST_IP = f"{_PROXY_SUBNET_PREFIX}.0/{_PROXY_SUBNET_MASK}"
+_HOST_IPPlain = f"{_PROXY_SUBNET_PREFIX}.0"  # for route src=, no prefix
+_SANDBOX_IPPlain = f"{_PROXY_SUBNET_PREFIX}.1"
+
+# Interface names (max 15 chars for Linux)
+_VETH_HOST = "veth-sbx-h"
+_VETH_SANDBOX = "veth-sbx-s"
+
+# Proxy port on the host-side interface (TCP)
+_PROXY_PORT = 8080
+
+
+def create_veth_pair() -> int:
+    """Create a veth pair on the HOST side. Returns the ifindex of the
+    sandbox-side end (to be moved into the sandbox's netns by the
+    supervisor).
+
+    This MUST be called from the supervisor process, BEFORE the sandbox
+    child enters its network namespace. The veth pair is created in the
+    host's netns.
+
+    Raises NamespaceSetupError on failure (fail closed).
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ip", "link", "add",
+                _VETH_HOST, "type", "veth",
+                "peer", "name", _VETH_SANDBOX,
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            raise NamespaceSetupError(
+                f"veth pair creation failed: {result.stderr.strip()} - "
+                "fail closed, allowlist network not established")
+    except FileNotFoundError:
+        raise NamespaceSetupError(
+            "ip command not found - cannot create veth pair, fail closed")
+    except subprocess.TimeoutExpired:
+        raise NamespaceSetupError(
+            "veth pair creation timed out - fail closed")
+    # Return the ifindex of the sandbox-side end
+    return _get_ifindex(_VETH_SANDBOX)
+
+
+def _get_ifindex(ifname: str) -> int:
+    """Read the ifindex of a named interface via /sys/class/net/<if>/ifindex.
+    Raises NamespaceSetupError if the interface does not exist.
+    """
+    try:
+        with open(f"/sys/class/net/{ifname}/ifindex", "r") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError) as e:
+        raise NamespaceSetupError(
+            f"cannot read ifindex for {ifname}: {e} - fail closed") from e
+
+
+def move_veth_to_netns(ifname: str, target_pid: int) -> None:
+    """Move interface ``ifname`` into the network namespace of
+    ``target_pid``. This MUST be called from the supervisor process
+    (which has CAP_NET_ADMIN in the initial/user namespace).
+
+    Raises NamespaceSetupError on failure (fail closed).
+    """
+    try:
+        result = subprocess.run(
+            ["ip", "link", "set", "dev", ifname, "netns", str(target_pid)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            raise NamespaceSetupError(
+                f"moving {ifname} to netns {target_pid} failed: "
+                f"{result.stderr.strip()} - fail closed")
+    except FileNotFoundError:
+        raise NamespaceSetupError(
+            "ip command not found - cannot move interface, fail closed")
+    except subprocess.TimeoutExpired:
+        raise NamespaceSetupError(
+            f"moving {ifname} to netns timed out - fail closed")
+
+
+def configure_host_side_veth(proxy_port: int = _PROXY_PORT) -> None:
+    """Configure the host-side end of the veth pair: assign IP, bring up,
+    add a route for the proxy subnet.
+
+    This MUST be called from the supervisor (host netns).
+    Raises NamespaceSetupError on failure (fail closed).
+    """
+    _run_ip([
+        "addr", "add", _HOST_IP, "dev", _VETH_HOST,
+    ])
+    _run_ip(["link", "set", "dev", _VETH_HOST, "up"])
+    # Route for the proxy subnet (already directly connected via /31)
+
+
+def configure_sandbox_side_veth() -> None:
+    """Configure the sandbox-side end of the veth pair INSIDE the sandbox
+    netns: assign IP, bring up, set default route via the host-side proxy.
+
+    This MUST be called from inside the sandbox netns (PID 1 or the
+    setup child after entering the netns).
+    Raises NamespaceSetupError on failure (fail closed).
+    """
+    _run_ip(["addr", "add", _SANDBOX_IP, "dev", _VETH_SANDBOX])
+    _run_ip(["link", "set", "dev", _VETH_SANDBOX, "up"])
+    # Default route through the host-side proxy endpoint
+    _run_ip([
+        "route", "add", "default",
+        "via", _HOST_IPPlain,
+        "dev", _VETH_SANDBOX,
+    ])
+
+
+def _run_ip(args: list[str], timeout: float = 5.0) -> None:
+    """Run ``ip <args>```. Raises NamespaceSetupError on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["ip"] + args,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise NamespaceSetupError(
+                f"ip {' '.join(args)} failed: {result.stderr.strip()} "
+                "- fail closed, allowlist network not established")
+    except FileNotFoundError:
+        raise NamespaceSetupError(
+            "ip command not found - fail closed")
+    except subprocess.TimeoutExpired:
+        raise NamespaceSetupError(
+            f"ip {' '.join(args)} timed out - fail closed")
+
+
+def setup_allowlist_veth(sandbox_pid: int,
+                         proxy_port: int = _PROXY_PORT) -> None:
+    """Supervisor-side orchestration: create the veth pair, move one end
+    into the sandbox's netns, and configure the host-side end.
+
+    Called AFTER the sandbox child has created its network namespace
+    (reported its PID via the ctl pipe), but BEFORE the workload runs.
+    The sandbox child must then call ``configure_sandbox_side_veth()``
+    from inside the netns to complete the configuration.
+
+    Raises NamespaceSetupError on any failure (fail closed).
+    """
+    create_veth_pair()
+    move_veth_to_netns(_VETH_SANDBOX, sandbox_pid)
+    configure_host_side_veth(proxy_port)
+
+
+def setup_allowlist_network_from_sandbox() -> None:
+    """Sandbox-side (inside the netns) completion of the veth-pair setup:
+    configure the sandbox-side interface and set the default route.
+
+    This MUST be called from inside the sandbox netns, AFTER the
+    supervisor has moved the sandbox-side veth into the netns.
+    Raises NamespaceSetupError on failure (fail closed).
+    """
+    configure_sandbox_side_veth()
+    # Ensure loopback remains down (deny-by-construction for lo)
+    ensure_loopback_down()
+
+
+def verify_allowlist_network(host_netns: str,
+                            proxy_port: int = _PROXY_PORT) -> NetworkState:
+    """Verify the sandbox netns is in the allowlist network state:
+    exactly one non-loopback interface (veth-sbx-s), the veth is UP,
+    the expected /31 address is assigned, the default route points to
+    the host-side proxy, and the netns is distinct from the host.
+
+    The loopback interface remains DOWN (deny-by-construction for lo;
+    the proxy path goes through the veth only).
+
+    Raises NamespaceSetupError on any verification failure (fail closed).
+    """
+    problems: list[str] = []
+    try:
+        dev = _read_proc_net("dev")
+        route = _read_proc_net("route")
+        ipv6_route = _read_proc_net("ipv6_route")
+        fib_trie = _read_proc_net("fib_trie")
+        if_inet6 = _read_proc_net("if_inet6")
+    except NamespaceSetupError as e:
+        raise NamespaceSetupError(
+            f"allowlist network verification failed: {e}") from e
+
+    names = _parse_dev_names(dev)
+    # Allow list mode: expect ["lo", "veth-sbx-s"] (order may vary)
+    expected = {"lo", _VETH_SANDBOX}
+    actual = set(names)
+    if actual != expected:
+        problems.append(
+            f"unexpected interfaces in allowlist netns: {names} "
+            f"(expected exactly {sorted(expected)})")
+
+    # lo must remain DOWN
+    try:
+        lo_flags = _if_flags("lo")
+    except OSError as e:
+        raise NamespaceSetupError(
+            f"cannot read lo flags during allowlist verification: {e}") from e
+    loopback_down = not bool(lo_flags & IFF_UP)
+    if not loopback_down:
+        problems.append("loopback is UP - allowlist mode requires lo DOWN")
+
+    # veth must be UP
+    try:
+        veth_flags = _if_flags(_VETH_SANDBOX)
+    except OSError as e:
+        raise NamespaceSetupError(
+            f"cannot read {_VETH_SANDBOX} flags: {e} - fail closed") from e
+    veth_up = bool(veth_flags & IFF_UP)
+    if not veth_up:
+        problems.append(
+            f"{_VETH_SANDBOX} is DOWN - allowlist mode requires it UP")
+
+    # Check for the /31 address on the veth
+    v4_addrs = _parse_fib_trie_addresses(fib_trie)
+    # The sandbox IP should be in the addresses
+    if _SANDBOX_IPPlain not in v4_addrs:
+        problems.append(
+            f"expected sandbox IP {_SANDBOX_IPPlain} not found in "
+            f"addresses: {v4_addrs}")
+
+    # The allowlist path is IPv4-only (the /31 link to the proxy):
+    # unexpected IPv6 addresses are refused (mirrors the deny version).
+    v6_addrs = _parse_if_inet6_addresses(if_inet6)
+    if v6_addrs:
+        problems.append(
+            f"unexpected IPv6 addresses in allowlist netns: {v6_addrs}")
+
+    # IPv6 routes (fresh-netns ::/0 dev lo entries on some kernels) must
+    # reference ONLY the loopback - nothing usable off the /31 link.
+    non_lo = [d for d in _parse_route_devices(ipv6_route) if d != "lo"]
+    if non_lo:
+        problems.append(
+            f"IPv6 routes reference non-loopback device(s) {non_lo} - "
+            "no host device may be reachable")
+
+    # Check for a default route via the host-side proxy
+    route_lines = [l for l in route.splitlines()
+                   if l.strip() and not l.startswith("Iface")]
+    has_default_route = False
+    for line in route_lines:
+        parts = line.split()
+        # /proc/net/route format: Iface Destination Gateway Flags ...
+        if len(parts) >= 3 and parts[1] == "00000000":  # 0.0.0.0 default
+            has_default_route = True
+            break
+    if not has_default_route:
+        problems.append("no default route found in allowlist netns")
+
+    # Netns must be distinct from host
+    try:
+        with open("/proc/self/ns/net", "r", encoding="ascii") as f:
+            own = str(os.fstat(f.fileno()).st_ino)
+    except OSError as e:
+        raise NamespaceSetupError(
+            f"cannot read own netns identity: {e} - fail closed") from e
+    distinct = bool(host_netns) and own != host_netns
+    if not distinct:
+        problems.append(
+            "sandbox netns is not distinct from host netns "
+            f"(own {own}, host {host_netns!r})")
+
+    if problems:
+        raise NamespaceSetupError(
+            "allowlist network verification failed: "
+            + "; ".join(problems))
+    return NetworkState(
+        interfaces=tuple(names), loopback_down=loopback_down,
+        ipv4_addresses=tuple(v4_addrs), ipv6_addresses=tuple(v6_addrs),
+        ipv4_routes=len(route_lines),
+        non_loopback_route_devices=(),
+        netns_distinct_from_host=distinct)
+
+
+def cleanup_veth_pair() -> None:
+    """Best-effort cleanup of the host-side veth pair. Called by the
+    supervisor during session teardown. Failures are logged but do not
+    raise (cleanup is best-effort, not a security gate).
+    """
+    for ifname in (_VETH_HOST, _VETH_SANDBOX):
+        try:
+            subprocess.run(
+                ["ip", "link", "del", ifname],
+                capture_output=True, timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass

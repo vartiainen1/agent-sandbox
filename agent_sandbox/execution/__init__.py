@@ -15,7 +15,7 @@ This module provides the two pieces the interfaces share:
   sandbox - v0.1 never interprets a shell command string);
 - the execve workload bridge: the CLI/MCP command is represented by a
   workload function that ``execve(2)``s the requested argv INSIDE the
-  already-established sandbox (execve is in the 45-syscall allowlist;
+  already-established sandbox (execve is in the 69-syscall allowlist;
   bare executable names resolve via ``execvpe`` against the
   sandbox-only sanitized PATH).
   stdout/stderr and exit status continue through the existing Step
