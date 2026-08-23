@@ -484,8 +484,14 @@ def _make_smoke_test(invariant_id: str, mod_path: str, cls_name: str, method_nam
         try:
             getattr(instance, method_name)()
         finally:
+            # Run tearDown if defined, then always run doCleanups() to
+            # execute any addCleanup() callbacks registered during setUp.
+            # Without this, classes that use addCleanup (e.g.
+            # InitPathFailClosedTests) leak mock patches into subsequent
+            # tests, causing platform-detection tests to fail.
             if hasattr(instance, "tearDown"):
                 instance.tearDown()
+            instance.doCleanups()
 
     _smoke.__doc__ = f"Smoke: {invariant_id} via {cls_name}.{method_name}"
     _smoke.__name__ = f"test_smoke_{invariant_id.lower()}"
