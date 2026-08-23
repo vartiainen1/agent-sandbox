@@ -119,3 +119,6 @@ jobs:
 
       - name: Rootless capability detection (records VERIFIED/BLOCKED with reason)
         run: python3 tools/seccomp-derivation/check_rootless_capabilities.py
+
+      - name: Phase 20 - release reproducibility + integrity (deterministic sdist/wheel, SHA-256 manifest, tamper detection)
+        run: python3 tools/release/test_release.py

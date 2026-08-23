@@ -131,9 +131,9 @@
 | Item | Status | Evidence |
 |---|---|---|
 | Build system defined | **VERIFIED** | pyproject.toml with setuptools backend |
-| Source distribution possible | **NOT VERIFIED** | `python -m build` not tested; no sdist/wheel artifacts produced |
-| Deterministic build | **NOT VERIFIED** | No reproducible-build tooling configured |
-| Checksums/signatures | **NOT VERIFIED** | No signing or checksum mechanism configured |
+| Source distribution possible | **VERIFIED** | `tools/release/build_release.py build` produces sdist + wheel (setuptools.build_meta PEP 517) — `tools/release/test_release.py` verifies artifact set, metadata, and install/import smoke test from the built wheel |
+| Deterministic build | **VERIFIED** | `build_release.py` pins `SOURCE_DATE_EPOCH` in-process + subprocess env, builds from a clean copy of the tree, and normalizes the sdist (pax mtime/atime/ctime/owner cleared, gzip mtime pinned); `reproducibility` command builds twice from independent clean copies and FAILS on any byte difference — test_release.py asserts the two builds are byte-identical (wheel + sdist) |
+| Checksums/signatures | **PARTIALLY VERIFIED** | `build` writes GNU `SHA256SUMS` + per-artifact `.sha256`; `verify` re-hashes and fails on tamper (tested). Cryptographic signing: mechanism prepared (`sign` → detached-armor GPG) but REQUIRES a maintainer-held key via `AGENT_SANDBOX_GPG_KEY` — human-controlled release infrastructure, external blocker, fails closed (exit 2) without it |
 | Release tagging | **DEFERRED** | v0.1.0 tag exists at bb73386; new release tag NOT created (requires separate authorization) |
 
 ---
@@ -142,9 +142,10 @@
 
 | Item | Status | Evidence |
 |---|---|---|
-| Signed commits | **NOT VERIFIED** | No GPG/SSH signing configured |
-| Signed tags | **NOT VERIFIED** | v0.1.0 is an unsigned annotated tag |
-| CI must pass before merge | **VERIFIED** | CI runs on push and PR; security-scan failures block CI |
+| Signed commits | **NOT VERIFIED** | Requires maintainer-held GPG/SSH key (external, human-controlled) |
+| Signed tags | **NOT VERIFIED** | Requires maintainer-held GPG/SSH key (external, human-controlled) |
+| Artifact signing mechanism | **PARTIALLY VERIFIED** | `build_release.py sign` produces detached-armor GPG signatures when `AGENT_SANDBOX_GPG_KEY` is set; without the key it fails closed (exit 2) — the mechanism is prepared, the credential is the external blocker |
+| CI must pass before merge | **VERIFIED** | CI runs on push and PR; security-scan failures block CI; Phase 20 step runs `tools/release/test_release.py` |
 | No secrets in repository | **VERIFIED** | detect-secrets baseline clean; zero runtime deps |
 
 ---
@@ -228,13 +229,13 @@
 | Dependencies | 5 | 0 | 0 | 0 |
 | Documentation | 7 | 0 | 0 | 0 |
 | Limitations | 8 | 0 | 0 | 0 |
-| Release artifacts | 1 | 0 | 3 | 1 |
-| Release integrity | 1 | 0 | 3 | 0 |
+| Release artifacts | 2 | 1 | 0 | 1 |
+| Release integrity | 1 | 1 | 2 | 0 |
 | Native verification | 3 | 1 | 2 | 0 |
 | CI gates | 6 | 0 | 0 | 0 |
 | Independent review | 0 | 0 | 1 | 0 |
 | v0.1 acceptance | 13 | 0 | 0 | 0 |
-| **Total** | **76** | **1** | **9** | **1** |
+| **Total** | **77** | **2** | **7** | **1** |
 
 ---
 
@@ -247,8 +248,8 @@ and partially verified on native Linux. The following items remain
 incomplete before a production-ready release claim could be made:
 
 1. **Independent Security Review** — REQUIRED / NOT YET PERFORMED
-2. **Release artifact reproducibility** — NOT VERIFIED
-3. **Release integrity (signing/checksums)** — NOT VERIFIED
+2. **Release artifact reproducibility** — **VERIFIED** (tools/release: deterministic sdist/wheel, two-clean-build byte-identity, SHA256SUMS)
+3. **Release integrity (signing/checksums)** — **PARTIALLY VERIFIED**: checksums + tamper detection mechanized and tested; cryptographic signing mechanism prepared but requires a maintainer-held key (AGENT_SANDBOX_GPG_KEY) - external, fails closed without it
 4. **aarch64 native enforcement** — NOT VERIFIED / SUBSTRATE-LIMITED
 5. **Full SECURITY_SPEC.md coverage** — PARTIALLY VERIFIED only
 

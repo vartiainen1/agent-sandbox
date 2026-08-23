@@ -624,9 +624,9 @@ Expected: three-way decision equivalence verified.
 
 5. **Phase 14 snapshots DEFERRED** — not core security.
 
-6. **Release artifact reproducibility NOT VERIFIED** — no sdist/wheel build tested, no deterministic-build tooling configured.
+6. **Release artifact reproducibility VERIFIED (2026-08-23)** — `tools/release/build_release.py`: deterministic sdist+wheel (SOURCE_DATE_EPOCH pinned, sdist header normalization, clean-copy builds), two-clean-build byte-identity gate, GNU `SHA256SUMS` + per-artifact `.sha256`; `tools/release/test_release.py` (17/17 PASS) + CI Phase 20 step.
 
-7. **Release signing/integrity NOT CONFIGURED** — no GPG/SSH signing on commits or tags.
+7. **Release signing/integrity PARTIALLY CONFIGURED** — checksums + tamper detection mechanized and tested; cryptographic signing mechanism prepared (`sign` → detached-armor GPG) but requires a maintainer-held key (`AGENT_SANDBOX_GPG_KEY`) — external, human-controlled, fails closed (exit 2) without it. GPG/SSH commit/tag signing remains unconfigured (external key).
 
 8. **In-sandbox race surface inherently limited** — clone/threading denied by seccomp; serial TOCTOU is the maximum achievable inside the sandbox.
 
