@@ -475,6 +475,27 @@ class CliTests(unittest.TestCase):
                                     "--workspace", "/tmp", "--", "x"])
         self.assertEqual(code, cli_mod.EXIT_USAGE)
 
+    def test_list_empty_sessions(self):
+        base = tempfile.mkdtemp(prefix="as-list-")
+        self.addCleanup(shutil.rmtree, base, True)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), \
+             contextlib.redirect_stderr(err):
+            code = cli_mod.main(["list"], state_dir=base)
+        self.assertEqual(code, 0)
+        self.assertIn("no sessions found", out.getvalue())
+
+    def test_list_json_empty(self):
+        base = tempfile.mkdtemp(prefix="as-list-")
+        self.addCleanup(shutil.rmtree, base, True)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), \
+             contextlib.redirect_stderr(err):
+            code = cli_mod.main(["list", "--json"], state_dir=base)
+        self.assertEqual(code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["sessions"], [])
+
     def test_init_refused_exit_3(self):
         refused = InitResult(
             ok=False, mode=SecurityMode.RESTRICTED,

@@ -113,7 +113,7 @@ EXIT_SESSION_ERROR = 5
 EXIT_DESTROY_INCOMPLETE = 6
 
 COMMANDS = ("create", "exec", "run", "status", "diff", "logs",
-            "destroy", "git")
+            "destroy", "git", "list")
 _MODE_CHOICES = ("hardened", "restricted", "compatibility")
 
 
@@ -571,6 +571,61 @@ def _cmd_status(argv: list[str], base: str) -> int:
     return 0
 
 
+def _cmd_list(argv: list[str], base: str) -> int:
+    """List all persisted sessions (session id, mode, created, workspace).
+    No host secrets are exposed."""
+    parser = argparse.ArgumentParser(
+        prog="agent-sandbox list",
+        description="List all persisted sessions.")
+    parser.add_argument("--json", action="store_true",
+                        help="machine-readable output")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return EXIT_USAGE
+
+    sessions_dir = os.path.join(base, "sessions")
+    try:
+        entries = sorted(os.listdir(sessions_dir))
+    except FileNotFoundError:
+        entries = []
+    except OSError as e:
+        return _session_error(f"list: cannot read sessions directory: {e}",
+                              args.json)
+
+    sessions = []
+    for entry in entries:
+        if not registry.is_valid_session_id(entry):
+            continue
+        try:
+            manifest = registry.load_manifest(base, entry)
+        except registry.RegistryError:
+            continue
+        if manifest is None:
+            continue
+        sessions.append({
+            "session_id": manifest["session_id"],
+            "mode": manifest.get("mode", ""),
+            "created": manifest.get("created", ""),
+            "workspace": manifest.get("workspace", ""),
+            "network_mode": manifest.get("network_mode", "deny"),
+        })
+
+    if args.json:
+        print(json.dumps({"sessions": sessions}, sort_keys=True))
+        return 0
+
+    if not sessions:
+        print("no sessions found")
+        return 0
+
+    print(f"{len(sessions)} session(s):")
+    for s in sessions:
+        print(f"  {s['session_id']}  mode={s['mode']}  "
+              f"workspace={s['workspace']}")
+    return 0
+
+
 def _cmd_diff(argv: list[str], base: str) -> int:
     """``git diff`` INSIDE the sandbox on /workspace (repository
     contents treated as untrusted - never read host-side), gated on the
@@ -791,6 +846,7 @@ def _print_usage() -> None:
     print("  logs      Show session audit events (observational)", file=sys.stderr)
     print("  destroy   Terminate + clean up a session", file=sys.stderr)
     print("  git       Safe read-only git workflow inside the sandbox", file=sys.stderr)
+    print("  list      List all persisted sessions", file=sys.stderr)
     print("", file=sys.stderr)
     print("Run 'agent-sandbox <command> --help' for command-specific help.",
           file=sys.stderr)
@@ -822,6 +878,8 @@ def main(argv: Sequence[str] | None = None,
             return _cmd_destroy(rest, base)
         if cmd == "git":
             return _cmd_git(rest, base)
+        if cmd == "list":
+            return _cmd_list(rest, base)
     # Unknown command or no arguments: show top-level usage.
     # Legacy one-shot form (no subcommand, starts with options like
     # --workspace) falls through to _cmd_run for backward compatibility.
