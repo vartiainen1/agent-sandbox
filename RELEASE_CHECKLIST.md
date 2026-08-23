@@ -118,7 +118,7 @@
 | aarch64 substrate limitation | **DOCUMENTED** | README, THREAT_MODEL, seccomp verification.md — SUBSTRATE-LIMITED / NOT VERIFIED |
 | Docker Desktop namespace limitation | **DOCUMENTED** | README validation table, CI comments |
 | GitHub AppArmor userns restriction | **DOCUMENTED** | README known native limitation section |
-| Phase 10 dependency workflow deferred | **DOCUMENTED** | README, THREAT_MODEL — ADR-006 network deferral |
+| Phase 10 dependency workflow — pip COMPLETE, npm/cargo unsupported | **DOCUMENTED** | README (v0.2 Step 4 + Phase 10 row), THREAT_MODEL T-048 — pip via proxy verified; npm/cargo require clone3, intentionally unsupported |
 | Phase 13 ecosystem integrations deferred | **DOCUMENTED** | Not core security |
 | Phase 14 snapshots deferred | **DOCUMENTED** | Not core security |
 | Full SECURITY_SPEC.md verification NOT established | **DOCUMENTED** | PARTIALLY VERIFIED / NOT COMPLETE |
@@ -180,7 +180,7 @@
 
 | Phase | Description | Reason |
 |---|---|---|
-| Phase 10 | Dependency Workflows | ADR-006 — network deny-by-construction in v0.1 |
+| Phase 10 | Dependency Workflows (pip: COMPLETE; npm/cargo: intentionally unsupported — clone3 required) | pip via proxy verified (v0.2 Step 4); npm/cargo measured, no syscall expansion |
 | Phase 13 | Ecosystem Integrations | Not core security |
 | Phase 14 | Snapshots | Deferred by design |
 

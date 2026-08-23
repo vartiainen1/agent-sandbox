@@ -618,7 +618,7 @@ Expected: three-way decision equivalence verified.
 
 2. **Full SECURITY_SPEC.md coverage NOT ESTABLISHED** — while every S-invariant maps to at least one test (THREAT_MODEL section 10), the evidence is a mix of NATIVE VERIFIED, DOCKER VERIFIED, and HOST-SIDE VERIFIED. Not every invariant has native kernel-boundary evidence.
 
-3. **Phase 10 dependency workflows DEFERRED** — networked package installation is prohibited by ADR-006 (network deny-by-construction in v0.1). Dependency containment is verified; installation workflow is not implemented.
+3. **Phase 10 dependency workflows — pip COMPLETE, npm/cargo intentionally unsupported** — the Python/pip dependency-installation workflow is implemented and verified (v0.2 Step 4, `pip install --proxy http://10.255.254.0:8080` inside the sandbox through the validating proxy, seccomp 69 → 70 +`fsync` only). Node/Rust (npm/cargo) are MEASURED and INTENTIONALLY UNSUPPORTED — real-filter measurement proves both unconditionally require `clone3` (the S-014 single-process containment boundary), so no syscall expansion. npm/cargo fail closed cleanly in-sandbox.
 
 4. **Phase 13 ecosystem integrations DEFERRED** — not core security.
 
