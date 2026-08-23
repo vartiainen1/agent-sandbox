@@ -534,6 +534,7 @@ def _cmd_status(argv: list[str], base: str) -> int:
         "created": manifest.get("created", ""),
         "workspace": manifest["workspace"],
         "network_mode": manifest["network_mode"],
+        "network_allowlist": manifest.get("network_allowlist", []),
         "policy_version": policy.get("version"),
         "capabilities": policy.get("capabilities", {}),
         "resources": manifest.get("resources", {}),
@@ -549,6 +550,12 @@ def _cmd_status(argv: list[str], base: str) -> int:
         print(f"created: {payload['created']}")
     print(f"workspace: {payload['workspace']}")
     print(f"network: {payload['network_mode']}")
+    allow = payload["network_allowlist"]
+    if allow:
+        print("network allowlist:")
+        for entry in allow:
+            priv = " (allow_private)" if entry.get("allow_private") else ""
+            print(f"  - {entry['host']}:{entry['port']}{priv}")
     print(f"policy: version {payload['policy_version']} "
           f"({len(payload['capabilities'])} capabilities)")
     res = payload["resources"]

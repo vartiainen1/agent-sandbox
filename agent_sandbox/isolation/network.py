@@ -396,7 +396,10 @@ def configure_host_side_veth(proxy_port: int = _PROXY_PORT) -> None:
 
 def configure_sandbox_side_veth() -> None:
     """Configure the sandbox-side end of the veth pair INSIDE the sandbox
-    netns: assign IP, bring up, set default route via the host-side proxy.
+    netns: assign IP, bring up, disable IPv6 (the allowlist path is
+    IPv4-only - the kernel auto-assigns a link-local IPv6 to a freshly
+    moved veth, which the netns verification must refuse), and set the
+    default route via the host-side proxy.
 
     This MUST be called from inside the sandbox netns (PID 1 or the
     setup child after entering the netns).
@@ -404,12 +407,35 @@ def configure_sandbox_side_veth() -> None:
     """
     _run_ip(["addr", "add", _SANDBOX_IP, "dev", _VETH_SANDBOX])
     _run_ip(["link", "set", "dev", _VETH_SANDBOX, "up"])
+    # Disable IPv6 on the sandbox-side interface: a moved veth is
+    # auto-assigned a fe80::/64 link-local address and connected route,
+    # and verify_allowlist_network must refuse ANY IPv6 in the netns
+    # (the /31 proxy link is IPv4-only). The knob is per-netns (the
+    # interface is in the sandbox netns here); writing it removes the
+    # link-local address + route. Failure = refusal (the allowlist netns
+    # would not be IPv4-only - fail closed).
+    _disable_ipv6(_VETH_SANDBOX)
     # Default route through the host-side proxy endpoint
     _run_ip([
         "route", "add", "default",
         "via", _HOST_IPPlain,
         "dev", _VETH_SANDBOX,
     ])
+
+
+def _disable_ipv6(ifname: str) -> None:
+    """Write ``disable_ipv6=1`` for ``ifname`` via the per-netns procfs
+    knob (/proc/sys/net/ipv6/conf/<if>/disable_ipv6). Must be called from
+    the netns that owns the interface. Raises NamespaceSetupError on any
+    failure (fail closed - the allowlist netns must be IPv4-only)."""
+    path = f"/proc/sys/net/ipv6/conf/{ifname}/disable_ipv6"
+    try:
+        with open(path, "w", encoding="ascii") as f:
+            f.write("1")
+    except OSError as e:
+        raise NamespaceSetupError(
+            f"cannot disable IPv6 on {ifname} ({e}) - the allowlist netns "
+            "must be IPv4-only, fail closed") from e
 
 
 def _run_ip(args: list[str], timeout: float = 5.0) -> None:
@@ -435,7 +461,8 @@ def _run_ip(args: list[str], timeout: float = 5.0) -> None:
 def setup_allowlist_veth(sandbox_pid: int,
                          proxy_port: int = _PROXY_PORT) -> None:
     """Supervisor-side orchestration: create the veth pair, move one end
-    into the sandbox's netns, and configure the host-side end.
+    into the sandbox's netns, configure the host-side end, and install
+    the host-side firewall that makes the proxy the sandbox's ONLY path.
 
     Called AFTER the sandbox child has created its network namespace
     (reported its PID via the ctl pipe), but BEFORE the workload runs.
@@ -447,6 +474,13 @@ def setup_allowlist_veth(sandbox_pid: int,
     create_veth_pair()
     move_veth_to_netns(_VETH_SANDBOX, sandbox_pid)
     configure_host_side_veth(proxy_port)
+    # The sandbox's default route points at the host veth endpoint, so
+    # WITHOUT host-side filtering the sandbox could reach host-local
+    # services directly (traffic arriving on veth-sbx-h destined to a
+    # host address is delivered locally) - bypassing the proxy entirely.
+    # install_host_firewall makes the proxy port the ONLY accepted
+    # destination from the veth interface (fail closed on any failure).
+    install_host_firewall(proxy_port)
 
 
 def setup_allowlist_network_from_sandbox() -> None:
@@ -576,11 +610,85 @@ def verify_allowlist_network(host_netns: str,
         netns_distinct_from_host=distinct)
 
 
-def cleanup_veth_pair() -> None:
-    """Best-effort cleanup of the host-side veth pair. Called by the
-    supervisor during session teardown. Failures are logged but do not
-    raise (cleanup is best-effort, not a security gate).
+def install_host_firewall(proxy_port: int = _PROXY_PORT) -> None:
+    """Install the host-side firewall that confines the sandbox to the
+    validating proxy (v0.2 Step 3; the destination enforcement the v0.2
+    Step 2 docs list as outstanding). On the HOST-side veth interface
+    (the sandbox's only physical path out):
+
+    - INPUT: accept only TCP to the proxy port; DROP everything else
+      (host-local services on any other host address/port are
+      unreachable from the sandbox - no arbitrary host access).
+    - FORWARD: DROP all traffic from the veth interface (no routing
+      through the host to any other network).
+
+    Requires the ``iptables`` binary and CAP_NET_ADMIN in the host netns.
+    Any failure raises NamespaceSetupError (fail closed - the allowlist
+    network is NOT established without destination enforcement). The
+    rules are removed by ``remove_host_firewall`` during teardown.
     """
+    _run_iptables([
+        "-A", "INPUT", "-i", _VETH_HOST, "-p", "tcp",
+        "--dport", str(proxy_port), "-j", "ACCEPT",
+    ])
+    _run_iptables(["-A", "INPUT", "-i", _VETH_HOST, "-j", "DROP"])
+    _run_iptables(["-A", "FORWARD", "-i", _VETH_HOST, "-j", "DROP"])
+
+
+def remove_host_firewall() -> None:
+    """Best-effort removal of the host firewall rules (teardown, not a
+    security gate - failures are ignored). Idempotent: missing rules are
+    tolerated (the iptables delete of an absent rule is non-fatal)."""
+    _run_iptables_best_effort([
+        "-D", "INPUT", "-i", _VETH_HOST, "-p", "tcp",
+        "--dport", str(_PROXY_PORT), "-j", "ACCEPT",
+    ])
+    _run_iptables_best_effort([
+        "-D", "INPUT", "-i", _VETH_HOST, "-j", "DROP"])
+    _run_iptables_best_effort([
+        "-D", "FORWARD", "-i", _VETH_HOST, "-j", "DROP"])
+
+
+def _run_iptables(args: list[str]) -> None:
+    """Run ``iptables <args>``. Raises NamespaceSetupError on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["iptables"] + args,
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            raise NamespaceSetupError(
+                f"iptables {' '.join(args)} failed: "
+                f"{result.stderr.strip()} - fail closed, allowlist "
+                "destination enforcement not established")
+    except FileNotFoundError:
+        raise NamespaceSetupError(
+            "iptables command not found - cannot confine the sandbox to "
+            "the proxy, fail closed")
+    except subprocess.TimeoutExpired:
+        raise NamespaceSetupError(
+            f"iptables {' '.join(args)} timed out - fail closed")
+
+
+def _run_iptables_best_effort(args: list[str]) -> None:
+    try:
+        subprocess.run(
+            ["iptables"] + args,
+            capture_output=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def cleanup_veth_pair() -> None:
+    """Best-effort cleanup of the host firewall rules and the host-side
+    veth pair. Called by the supervisor during session teardown.
+    Failures are logged but do not raise (cleanup is best-effort, not a
+    security gate). The sandbox-side veth disappears when the sandbox
+    netns is destroyed.
+    """
+    remove_host_firewall()
     for ifname in (_VETH_HOST, _VETH_SANDBOX):
         try:
             subprocess.run(

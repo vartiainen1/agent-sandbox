@@ -1,14 +1,14 @@
 # v0.2 Step 2 — Allowlist Network Plumbing + Socket Domain Filtering — Native Verification Runbook
 
-> **Status: PLUMBING COMPLETE, PROXY/FIREWALL OUTSTANDING**
+> **Status: PLUMBING COMPLETE (proxy + firewall land in v0.2 Step 3 —
+> see `RUNBOOK_v0.2_STEP3_VALIDATING_PROXY_NATIVE_VERIFICATION.md`)**
 >
 > This runbook documents the exact commands, expected results, and
 > pass/fail criteria for natively verifying the v0.2 Step 2 allowlist
 > network plumbing (veth pair + socket domain argument filtering) on the
-> Ubuntu 24.04 / kernel 6.8 / x86_64 QEMU VM, plus the explicitly
-> outstanding work (validating proxy, host-side iptables/nftables) that
-> must land before `network_mode="allowlist"` provides real outbound
-> networking.
+> Ubuntu 24.04 / kernel 6.8 / x86_64 QEMU VM. The validating proxy and
+> the host-side iptables destination enforcement (the outstanding work
+> listed below) were implemented and natively verified in v0.2 Step 3.
 
 ---
 
@@ -29,14 +29,14 @@
 
 | Item | Status |
 |---|---|
-| Host-side **validating proxy** process (listens on the host veth endpoint, validates destinations, forwards) | **NOT IMPLEMENTED** |
-| Host-side **iptables/nftables** destination restriction on the host endpoint | **NOT IMPLEMENTED** |
+| Host-side **validating proxy** process (listens on the host veth endpoint, validates destinations, forwards) | **IMPLEMENTED in v0.2 Step 3** (`isolation/proxy.py`) |
+| Host-side **iptables/nftables** destination restriction on the host endpoint | **IMPLEMENTED in v0.2 Step 3** (`network.py::install_host_firewall`) |
 
-Consequence: with `network_mode="allowlist"` today, the sandbox has a
-veth and a default route into a **dead** host endpoint — no workload can
-reach any external destination. The mode exists so the plumbing and its
-verification are in place and honest; it is NOT a working outbound
-network mode. Do not describe it as one.
+Consequence: with `network_mode="allowlist"` (v0.2 Step 3+), the
+sandbox's ONLY path out is the validating proxy, which enforces the
+`network_allowlist` with SSRF-safe destination validation. See
+`RUNBOOK_v0.2_STEP3_VALIDATING_PROXY_NATIVE_VERIFICATION.md` for the
+native verification.
 
 ---
 

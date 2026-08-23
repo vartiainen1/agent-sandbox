@@ -19,6 +19,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from agent_sandbox.isolation.proxy import (  # SSRF classification (shared)
+    is_allowed_allow_entry,
+    is_ipv4_literal,
+    validate_host,
+)
 from agent_sandbox.models import ConfigError, SecurityMode
 from agent_sandbox.policy import Policy, PolicyError
 
@@ -27,6 +32,26 @@ from agent_sandbox.policy import Policy, PolicyError
 # host-side proxy that enforces destination restrictions; the sandbox itself
 # never has direct external network access.
 SUPPORTED_NETWORK_MODES = frozenset({"deny", "allowlist"})
+
+
+@dataclass(frozen=True)
+class NetworkAllow:
+    """One allowlisted destination (v0.2 validating proxy, ARCHITECTURE.md
+    section 8). ``host`` is a hostname or a strict IPv4 literal;
+    ``port`` is 1..65535. ``allow_private`` opts this destination into
+    RFC 1918/6598 private ranges - loopback, link-local, metadata and
+    the other SSRF-blocked classes are NEVER relaxable (security spec
+    section 13: private ranges are denied unless explicitly permitted,
+    but the host itself and cloud metadata stay unreachable).
+
+    The allowlist is TRUSTED host-side configuration: it is validated
+    here, never mounted into the sandbox, and never writable by the
+    workload (S-025/S-026). The proxy enforces it at connect time.
+    """
+
+    host: str
+    port: int
+    allow_private: bool = False
 
 # Default environment allowlist (ARCHITECTURE.md section 11; S-034):
 # the host environment is never inherited - only these are constructed,
@@ -93,6 +118,11 @@ class RuntimeConfig:
     mode: SecurityMode
     workspace: str
     network_mode: str = "deny"
+    # v0.2 validating proxy: the explicit destination allowlist. Only
+    # meaningful when network_mode == "allowlist" (a deny session with
+    # allowlist entries is rejected below); the proxy denies anything
+    # not listed here (deny by default).
+    network_allowlist: tuple[NetworkAllow, ...] = ()
     env_allowlist: tuple[str, ...] = DEFAULT_ENV_ALLOWLIST
     resources: ResourceLimits = field(default_factory=lambda: _default_limits())
     # Phase 4 (ADR-010, ARCHITECTURE section 12, S-015/S-021/S-025/S-026):
@@ -112,8 +142,8 @@ class RuntimeConfig:
             raise ConfigError("configuration must be a mapping")
 
         unknown = sorted(set(data) - {
-            "mode", "workspace", "network_mode", "env_allowlist",
-            "resources", "policy"})
+            "mode", "workspace", "network_mode", "network_allowlist",
+            "env_allowlist", "resources", "policy"})
         if unknown:
             raise ConfigError(
                 f"unknown configuration field(s): {', '.join(unknown)} - "
@@ -122,11 +152,23 @@ class RuntimeConfig:
         mode = _parse_mode(data.get("mode"))
         workspace = _parse_workspace(data.get("workspace"))
         network_mode = _parse_network_mode(data.get("network_mode", "deny"))
+        network_allowlist = _parse_network_allowlist(
+            data.get("network_allowlist"))
+        # Deny-by-construction sessions cannot carry allowlisted
+        # destinations: a non-empty allowlist under deny mode is a
+        # contradiction rejected here (fail closed, never a silent
+        # ignore of the allowlist).
+        if network_mode == "deny" and network_allowlist:
+            raise ConfigError(
+                "network_allowlist: entries require network_mode=\"allowlist\" "
+                "- a deny-by-construction session cannot have allowlisted "
+                "destinations")
         env_allowlist = _parse_env_allowlist(data.get("env_allowlist"))
         resources = _parse_resources(data.get("resources"))
         policy = _parse_policy(data.get("policy"))
         _check_policy_resources_consistent(policy, resources)
         return cls(mode=mode, workspace=workspace, network_mode=network_mode,
+                   network_allowlist=network_allowlist,
                    env_allowlist=env_allowlist, resources=resources,
                    policy=policy)
 
@@ -173,6 +215,80 @@ def _parse_network_mode(value) -> str:
             f"(supported: {', '.join(sorted(SUPPORTED_NETWORK_MODES))}) - "
             "network is deny by construction unless allowlist is selected")
     return value
+
+
+def _parse_network_allowlist(value) -> tuple[NetworkAllow, ...]:
+    """Strictly validate the destination allowlist (S-021: unknown fields
+    are rejected, never ignored; malformed entries fail closed).
+
+    Rules:
+    - A list/tuple of mappings, each exactly {host, port, allow_private}.
+    - host: a hostname or a strict IPv4 literal (shared grammar with the
+      proxy). An IPv4 literal that the proxy would ALWAYS deny (loopback,
+      link-local, metadata, multicast, ...) is rejected here - a dead
+      allowlist entry is a configuration error, never a silent no-op.
+      Private ranges are rejected unless ``allow_private`` is set (the
+      proxy relaxes only that class; everything else stays denied).
+    - port: an integer in [1, 65535].
+    - Duplicate host+port entries are rejected (a duplicate cannot carry
+      a different meaning).
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ConfigError(
+            "network_allowlist: expected a list of destination entries")
+    out: list[NetworkAllow] = []
+    for i, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ConfigError(
+                f"network_allowlist[{i}]: expected a mapping with host, port "
+                "and optional allow_private")
+        unknown = sorted(set(entry) - {"host", "port", "allow_private"})
+        if unknown:
+            raise ConfigError(
+                f"network_allowlist[{i}]: unknown field(s): "
+                f"{', '.join(unknown)} - security-critical allowlist fields "
+                "must be explicit")
+        host = entry.get("host")
+        if not isinstance(host, str) or not host.strip():
+            raise ConfigError(
+                f"network_allowlist[{i}]: host must be a non-empty string")
+        host = host.strip()
+        if not validate_host(host):
+            raise ConfigError(
+                f"network_allowlist[{i}]: malformed host {host!r} (a "
+                "hostname or IPv4 literal is required)")
+        port = entry.get("port")
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise ConfigError(
+                f"network_allowlist[{i}]: port must be an integer, got "
+                f"{port!r}")
+        if not 1 <= port <= 65535:
+            raise ConfigError(
+                f"network_allowlist[{i}]: port must be in [1, 65535], got "
+                f"{port}")
+        allow_private = entry.get("allow_private", False)
+        if not isinstance(allow_private, bool):
+            raise ConfigError(
+                f"network_allowlist[{i}]: allow_private must be true/false, "
+                f"got {allow_private!r}")
+        blocked = is_allowed_allow_entry(host, allow_private)
+        if blocked is not None:
+            raise ConfigError(
+                f"network_allowlist[{i}]: destination {host}:{port} can never "
+                f"be forwarded - {blocked} (fail closed, no dead allowlist "
+                "entries)")
+        out.append(NetworkAllow(host=host, port=port,
+                                allow_private=allow_private))
+    seen = {
+        (host.casefold() if not is_ipv4_literal(host) else host, e.port)
+        for e in out for host in [e.host]
+    }
+    if len(seen) != len(out):
+        raise ConfigError(
+            "network_allowlist: duplicate host+port entries are not allowed")
+    return tuple(out)
 
 
 def _parse_env_allowlist(value) -> tuple[str, ...]:

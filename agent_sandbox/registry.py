@@ -51,8 +51,8 @@ _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 # silent ignore.
 _MANIFEST_FIELDS = frozenset({
     "schema", "session_id", "created", "mode", "workspace",
-    "network_mode", "env_allowlist", "resources", "policy",
-    "last_execution",
+    "network_mode", "network_allowlist", "env_allowlist", "resources",
+    "policy", "last_execution",
 })
 
 
@@ -141,6 +141,10 @@ def save_session(base: str, session_id: str, config: RuntimeConfig,
         "mode": config.mode.value,
         "workspace": config.workspace,
         "network_mode": config.network_mode,
+        "network_allowlist": [
+            {"host": e.host, "port": e.port, "allow_private": e.allow_private}
+            for e in config.network_allowlist
+        ],
         "env_allowlist": list(config.env_allowlist),
         "resources": {
             "cpu_seconds": config.resources.cpu_seconds,
@@ -210,6 +214,7 @@ def config_from_manifest(manifest: dict) -> RuntimeConfig:
         "mode": manifest.get("mode"),
         "workspace": manifest.get("workspace"),
         "network_mode": manifest.get("network_mode", "deny"),
+        "network_allowlist": manifest.get("network_allowlist"),
         "env_allowlist": manifest.get("env_allowlist"),
         "resources": manifest.get("resources"),
         "policy": manifest.get("policy"),

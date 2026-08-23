@@ -238,6 +238,7 @@ class RuntimeSession:
                 cgroup_session=cgroup_session,
                 env_allowlist=self._config.env_allowlist,
                 network_mode=self._config.network_mode,
+                network_allowlist=self._config.network_allowlist,
             )
             # Observational lifecycle metadata (CLI destroy): record the
             # sandbox identity of this run so a caller can terminate/verify

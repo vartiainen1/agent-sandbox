@@ -147,6 +147,60 @@ class VethFailClosedTests(unittest.TestCase):
                 net_mod._run_ip(["link", "show"])
             self.assertIn("timed out", str(cm.exception))
 
+    def test_install_host_firewall_ip_tables_not_found(self):
+        """install_host_firewall fails closed when iptables is missing."""
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            with self.assertRaises(NamespaceSetupError) as cm:
+                net_mod.install_host_firewall()
+            self.assertIn("iptables command not found", str(cm.exception))
+
+    def test_install_host_firewall_returns_error(self):
+        """install_host_firewall fails closed when iptables fails."""
+        mock_result = type("Result", (), {
+            "returncode": 1,
+            "stderr": "Permission denied (you must be root)",
+        })()
+        with patch("subprocess.run", return_value=mock_result):
+            with self.assertRaises(NamespaceSetupError) as cm:
+                net_mod.install_host_firewall()
+            self.assertIn("iptables", str(cm.exception))
+
+    def test_install_host_firewall_timeout(self):
+        """install_host_firewall fails closed on timeout."""
+        import subprocess
+        with patch("subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("iptables", 5.0)):
+            with self.assertRaises(NamespaceSetupError) as cm:
+                net_mod.install_host_firewall()
+            self.assertIn("timed out", str(cm.exception))
+
+    def test_cleanup_tolerates_missing_iptables(self):
+        """cleanup_veth_pair is best-effort: a missing iptables binary must
+        not raise (teardown is never a security gate)."""
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            net_mod.cleanup_veth_pair()  # must not raise
+
+    def test_setup_allowlist_veth_installs_firewall(self):
+        """setup_allowlist_veth installs the host firewall (the sandbox's
+        only path must be the proxy - no direct host access)."""
+        results = []
+
+        def fake_run(cmd, **kwargs):
+            results.append(list(cmd))
+            return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch.object(net_mod, "_get_ifindex", return_value=42):
+            net_mod.setup_allowlist_veth(12345)
+            calls = [c for c in results if c and c[0] == "iptables"]
+            self.assertEqual(len(calls), 3)
+            # INPUT: accept only the proxy port, drop everything else;
+            # FORWARD: drop everything from the veth interface.
+            self.assertIn("--dport", calls[0])
+            self.assertEqual(calls[0][-2:], ["-j", "ACCEPT"])
+            self.assertEqual(calls[1][-2:], ["-j", "DROP"])
+            self.assertEqual(calls[2][-2:], ["-j", "DROP"])
+
 
 class VerifyAllowlistNetworkTests(unittest.TestCase):
     """Tests for verify_allowlist_network (host-side, mocked)."""

@@ -280,22 +280,38 @@ root filesystem built by the supervisor:
   endpoints, e.g. `169.254.169.254`), SSRF, DNS rebinding, and Unix-socket
   escapes to host services are unreachable (S-004): the docker socket and
   any host socket path simply do not exist in the rootfs.
-- **Explicit allowlists are a v0.2 feature** (design §12, §13). v0.2
-  Step 2 has implemented the *plumbing*: `network_mode="allowlist"`
-  creates a veth pair (`veth-sbx-h` / `veth-sbx-s`), moves the sandbox
-  end into the sandbox netns, configures a private /31 point-to-point
-  link (sandbox `10.255.254.1`, host `10.255.254.0`), sets a default
-  route in the sandbox toward the host endpoint, verifies the allowlist
-  netns state, and cleans the pair up on teardown. `socket` is
-  allowlisted but argument-filtered to AF_INET/AF_INET6 so S-003/S-004
-  Unix-socket isolation is preserved. **The host-side validating proxy
-  and the iptables/nftables destination enforcement are NOT yet
-  implemented** (outstanding v0.2 Step 2 substeps) — the intended design
-  remains: enforcement inside the network namespace (interface + routing
-  + a host-side proxy with destination validation), never by hostname
-  allowlists alone, accounting for DNS resolution, redirects, alternate
-  address forms, and DNS rebinding (security spec §8). Until the proxy
-  lands, `network_mode="allowlist"` provides no outbound networking.
+- **Explicit allowlists are a v0.2 feature** (design §12, §13).
+  `network_mode="allowlist"` creates a veth pair (`veth-sbx-h` /
+  `veth-sbx-s`), moves the sandbox end into the sandbox netns,
+  configures a private /31 point-to-point link (sandbox `10.255.254.1`,
+  host `10.255.254.0`), sets a default route in the sandbox toward the
+  host endpoint, verifies the allowlist netns state (IPv4-only; IPv6 is
+  disabled on the sandbox-side veth), and cleans up on teardown. `socket`
+  is allowlisted but argument-filtered to AF_INET/AF_INET6 so S-003/S-004
+  Unix-socket isolation is preserved.
+- **v0.2 Step 3: the validating proxy makes the allowlist real.** The
+  supervisor spawns a host-side proxy (`isolation/proxy.py`) bound ONLY
+  to the host-side veth IP; a host-side firewall (`isolation/network.py`
+  `install_host_firewall`, iptables INPUT/FORWARD) makes the proxy port
+  the ONLY destination accepted from the veth interface, so the sandbox
+  cannot reach host-local services directly (no arbitrary host access;
+  direct connections are dropped). The sandbox's ONLY path out is a TCP
+  connection to the proxy, which validates the destination against the
+  operator-supplied `network_allowlist` (host+port) before forwarding.
+  The CONNECT protocol, the SSRF gate, and `allow_private` are described
+  in `isolation/proxy.py`; enforcement is never by hostname allowlists
+  alone — the proxy resolves hostnames HOST-SIDE at connect time and
+  independently validates every resolved address against the SSRF
+  checks (loopback, link-local incl. `169.254.169.254` metadata,
+  multicast, unspecified, reserved, and RFC 1918/6598 private ranges are
+  denied; private ranges are forwardable only via an explicit
+  `allow_private` allowlist entry, which never relaxes loopback/
+  link-local/metadata). DNS rebinding is therefore mitigated: an
+  allowlisted hostname that resolves to a denied address is refused.
+  `network_allowlist` is trusted host-side configuration (S-025/S-026)
+  — never mounted into the sandbox, never writable by the workload.
+  Proxy setup/validation/routing failures fail closed (the sandbox is
+  never released to run the workload on a dead or unverified path).
 
 ---
 

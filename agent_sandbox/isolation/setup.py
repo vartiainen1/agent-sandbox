@@ -155,6 +155,7 @@ from agent_sandbox.isolation import lifecycle as lifecycle_mod
 from agent_sandbox.isolation import namespaces, rootfs, syscalls, userns
 from agent_sandbox.isolation import network as net_mod
 from agent_sandbox.isolation import output as output_mod
+from agent_sandbox.isolation import proxy as proxy_mod
 from agent_sandbox.isolation import privileges as priv_mod
 from agent_sandbox.isolation import resources as resources_mod
 from agent_sandbox.isolation import seccomp as seccomp_mod
@@ -268,6 +269,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                    output_mb: int | None = None,
                    wall_time_seconds: int | None = None,
                    network_mode: str = "deny",
+                   network_allowlist: tuple = (),
                    ) -> SandboxRun:
     """Run ``fn`` inside the full sandbox boundary.
 
@@ -306,6 +308,17 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     The deadline lives entirely in the supervisor process - the
     workload cannot disable, evade, or reset it (no shared clock, no
     caps, no channel).
+
+    With ``network_mode="allowlist"`` (v0.2): the supervisor creates
+    the veth pair, moves the sandbox end into the sandbox netns, then
+    spawns the host-side VALIDATING PROXY (agent_sandbox/isolation/
+    proxy.py) bound to the host-side veth IP and probes it listening
+    BEFORE releasing PID 1 (fail closed - the sandbox's only path out
+    must be live before the workload can run). ``network_allowlist``
+    carries the validated destination allowlist (host+port, optional
+    allow_private); the proxy enforces it and denies everything else.
+    Teardown terminates the proxy (SIGTERM + reap) before removing the
+    veth pair, so no proxy or handler process survives the session.
 
     With ``cgroup_session`` (Step 15): the supervisor is a child
     subreaper (S-014) and, on termination, kills the SANDBOX PID 1 (the
@@ -606,6 +619,7 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
     # sandbox-side end into the sandbox's netns via the sandbox PID, and
     # configures the host-side end. The sandbox child then configures its
     # side and verifies the allowlist network state.
+    proxy_pid = -1
     if network_mode == "allowlist":
         if sandbox_pid1 < 1:
             os.close(net_ready_r)
@@ -616,14 +630,33 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
                 " workload not executed")
         try:
             net_mod.setup_allowlist_veth(sandbox_pid1)
+            # The validating proxy binds to the HOST-side veth IP (the
+            # sandbox's only route). It is spawned and PROBED listening
+            # before PID 1 is released: a proxy that is not live means
+            # the workload's only path out is dead - fail closed. The
+            # proxy child must not hold the sandbox pipes (out_r,
+            # net_ready ends) - they are closed in the child immediately.
+            proxy_pid = proxy_mod.spawn_proxy(
+                network_allowlist,
+                listen_ip=net_mod._HOST_IPPlain,
+                port=net_mod._PROXY_PORT,
+                close_fds=(out_r, net_ready_r, net_ready_w))
+            if not proxy_mod.wait_proxy_listening(
+                    net_mod._HOST_IPPlain, net_mod._PROXY_PORT):
+                raise NamespaceSetupError(
+                    "validating proxy is not listening on the host veth "
+                    "endpoint - fail closed, workload not executed")
             os.write(net_ready_w, b"1")
         except BaseException as e:
+            if proxy_pid >= 1:
+                proxy_mod.terminate_proxy(proxy_pid)
             try:
                 os.write(net_ready_w, b"0")
             except OSError:
                 pass
             raise NamespaceSetupError(
-                f"veth setup failed: {e} - fail closed, workload not executed")
+                f"veth/proxy setup failed: {e} - fail closed, workload "
+                "not executed")
         finally:
             os.close(net_ready_w)
             os.close(net_ready_r)
@@ -727,9 +760,15 @@ def run_in_sandbox(fn, rootfs_state=None, disk_mb: int = 10240,
             os.close(out_r)
         except OSError:
             pass
-        # v0.2: best-effort cleanup of the host-side veth pair. The
-        # sandbox-side veth disappears when the sandbox netns is destroyed.
+        # v0.2: best-effort cleanup of the host-side proxy and veth pair.
+        # The proxy is terminated FIRST (it holds the host-side veth IP's
+        # listening socket) - SIGTERM + reap kills the listener AND its
+        # per-connection handlers, so no proxy process survives the
+        # session. The sandbox-side veth disappears when the sandbox
+        # netns is destroyed.
         if network_mode == "allowlist":
+            if proxy_pid >= 1:
+                proxy_mod.terminate_proxy(proxy_pid)
             net_mod.cleanup_veth_pair()
 
 

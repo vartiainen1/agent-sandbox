@@ -191,26 +191,32 @@ access host files? Is the rootfs minimal and read-only where required?
 any network resource?
 
 **Relevant source files:**
-- `agent_sandbox/isolation/network.py` — network namespace, loopback DOWN
+- `agent_sandbox/isolation/network.py` — network namespace, loopback DOWN, veth plumbing, host firewall (iptables INPUT/FORWARD)
+- `agent_sandbox/isolation/proxy.py` — host-side validating proxy (v0.2 Step 3): CONNECT protocol, SSRF gate, allowlist matching, host-side resolution, spawn/terminate
+- `agent_sandbox/config.py` — `NetworkAllow` + `network_allowlist` validation
 - `ADRs/ADR-006-network-isolation.md`
 
 **Relevant tests:**
 - `tests/unit/test_network.py` — deny-by-construction, metadata probe, private-range probes
+- `tests/unit/test_network_veth.py` — veth plumbing + host firewall fail-closed
+- `tests/unit/test_proxy.py` — CONNECT parsing, SSRF classification, DNS-rebinding denial, allowlist matching, config dead-entry rejection, proxy process integration (real echo server), full-sandbox e2e (workload reaches ONLY the proxy; direct host access DROPPED; AF_UNIX EPERM)
 - `tests/adversarial/test_resource_attacks.py` — resource exhaustion
 
 **Security invariants:** S-005, S-006, S-007
 
 **Threat model entries:** T-012..T-017
 
-**Verification classification:** DOCKER VERIFIED (real netns + socket deny)
+**Verification classification:** DOCKER/NATIVE VERIFIED (real netns + socket deny; v0.2 Step 3 proxy + firewall + sandbox e2e verified natively in a privileged Linux container 2026-08-23)
 
 **Specific reviewer inspection:**
-- Confirm no network interfaces exist in the sandbox (except loopback)
+- Confirm no network interfaces exist in the sandbox in deny mode (except loopback DOWN)
+- Confirm the allowlist netns is IPv4-only (veth only; IPv6 disabled on the sandbox-side veth; IPv6 addresses/routes refused by verification)
 - Confirm loopback is DOWN
-- Confirm no DNS resolver is configured
-- Confirm socket syscall is denied by seccomp
+- Confirm no DNS resolver is configured in the sandbox (resolution happens host-side in the trusted proxy)
+- Confirm socket syscall is denied by seccomp (all domains except AF_INET/AF_INET6 via the BPF argument filter; AF_UNIX/AF_NETLINK/AF_PACKET EPERM)
 - Confirm 169.254.169.254 (metadata) is unreachable
 - Confirm RFC1918 ranges are unreachable
+- **v0.2 Step 3:** confirm the proxy binds ONLY to the host-side veth IP (never a wildcard); confirm the host firewall makes the proxy port the ONLY destination accepted from the veth interface (no direct host access); confirm destination validation is AT CONNECT (hostname resolution + per-address SSRF checks in the proxy, DNS-rebinding safe); confirm `allow_private` relaxes only the private-range class (loopback/link-local/metadata never relaxable); confirm config-time rejection of dead allowlist entries; confirm proxy setup/probe/teardown failures fail closed and leave no leaked processes/interfaces/rules
 
 ---
 
