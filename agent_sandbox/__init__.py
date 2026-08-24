@@ -7,4 +7,4 @@ package - the workload runs inside the isolated environment (see
 ARCHITECTURE.md, THREAT_MODEL.md).
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.1"

@@ -134,8 +134,8 @@
 | Build system defined | **VERIFIED** | pyproject.toml with setuptools backend |
 | Source distribution possible | **VERIFIED** | `tools/release/build_release.py build` produces sdist + wheel (setuptools.build_meta PEP 517) — `tools/release/test_release.py` verifies artifact set, metadata, and install/import smoke test from the built wheel |
 | Deterministic build | **VERIFIED** | `build_release.py` pins `SOURCE_DATE_EPOCH` in-process + subprocess env, builds from a clean copy of the tree, and normalizes the sdist (pax mtime/atime/ctime/owner cleared, gzip mtime pinned); `reproducibility` command builds twice from independent clean copies and FAILS on any byte difference — test_release.py asserts the two builds are byte-identical (wheel + sdist) |
-| Checksums/signatures | **VERIFIED** | `build` writes GNU `SHA256SUMS` + per-artifact `.sha256`; `verify` re-hashes and fails on tamper (tested). Cryptographic signing: performed (`sign` → detached-armor GPG with `AGENT_SANDBOX_GPG_KEY`); the v0.2.0 artifacts in `dist/` carry `.asc` signatures; fails closed (exit 2) without the key |
-| Release tagging | **VERIFIED** | v0.2.0 annotated tag created (2026-08-24), GPG-signed, points to CI-green HEAD 605b688 (== master); v0.1.0 remains local-only at bb73386 (never pushed) |
+| Checksums/signatures | **VERIFIED** | `build` writes GNU `SHA256SUMS` + per-artifact `.sha256`; `verify` re-hashes and fails on tamper (tested). Cryptographic signing: performed (`sign` → detached-armor GPG with `AGENT_SANDBOX_GPG_KEY`), producing `.asc` signatures per shipped release (v0.3.1 onward); fails closed (exit 2) without the key |
+| Release tagging | **VERIFIED** | v0.2.0 annotated tag created (2026-08-24), GPG-signed, points to CI-green HEAD 605b688 (== master); v0.3.0 annotated + GitHub-Verified tag created prematurely at commit b7301b5 (never shipped, untouched); v0.3.1 is the intended shipped release; v0.1.0 remains local-only at bb73386 (never pushed) |
 
 ---
 
@@ -144,8 +144,8 @@
 | Item | Status | Evidence |
 |---|---|---|
 | Signed commits | **NOT VERIFIED** | Requires maintainer-held GPG/SSH key (external, human-controlled) |
-| Signed tags | **VERIFIED** | v0.2.0 tag is GPG-signed (locally verified Good signature); GitHub-side verification shows false until the public key is uploaded to the account |
-| Artifact signing mechanism | **VERIFIED** | signing performed with `AGENT_SANDBOX_GPG_KEY`; the v0.2.0 release artifacts carry detached-armor `.asc` signatures; without the key it fails closed (exit 2) |
+| Signed tags | **VERIFIED** | v0.2.0 tag is GPG-signed (locally verified Good signature); v0.3.0 tag is GPG-signed and GitHub-Verified (premature, never shipped); v0.3.1 is the intended shipped release |
+| Artifact signing mechanism | **VERIFIED** | `sign` with `AGENT_SANDBOX_GPG_KEY` produces detached-armor `.asc` signatures per shipped release (v0.3.1 onward); without the key it fails closed (exit 2) |
 | CI must pass before merge | **VERIFIED** | CI runs on push and PR; security-scan failures block CI; Phase 20 step runs `tools/release/test_release.py` |
 | No secrets in repository | **VERIFIED** | detect-secrets baseline clean; zero runtime deps |
 
@@ -255,7 +255,7 @@ and their current status:
 
 1. **Independent Security Review** — REQUIRED / NOT YET PERFORMED
 2. **Release artifact reproducibility** — **VERIFIED** (tools/release: deterministic sdist/wheel, two-clean-build byte-identity, SHA256SUMS)
-3. **Release integrity (signing/checksums)** — **VERIFIED**: checksums + tamper detection mechanized and tested; signing performed for v0.2.0 (GPG-signed tag + detached-armor `.asc` on the local release artifacts); artifacts are not published to PyPI/GitHub Releases
+3. **Release integrity (signing/checksums)** — **VERIFIED**: checksums + tamper detection mechanized and tested; GPG-signed release tags (v0.2.0; v0.3.0 — premature, never shipped); `.asc` artifact signatures produced per shipped release (v0.3.1 onward); artifacts distributed via GitHub Release objects created from signed tags; no PyPI publication
 4. **aarch64 native enforcement** — NOT VERIFIED / SUBSTRATE-LIMITED
 5. **Full SECURITY_SPEC.md coverage** — PARTIALLY VERIFIED only
 

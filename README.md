@@ -349,8 +349,10 @@ S-003/S-004 Unix-socket/credential isolation while leaving the v0.2  proxy path 
   filesystem real-path tests skip there (never a false PASS); the full
   rootless mapping + rootfs boundary is exercised on Docker (uid 1001),
   and the complete HARDENED path on the native VM (commit 7c1c30e).
-- **No GitHub Release object / PyPI publication** — the v0.2.0 git tag is
-  the release marker; no GitHub Release or PyPI package exists.
+- **No PyPI publication** — the signed git tag is the authoritative
+  release marker; GitHub Release objects are the artifact distribution
+  channel for shipped releases (first shipped release: v0.3.1). No PyPI
+  package exists.
 - **Independent security review not yet performed** — required before any
   production-ready claim; see the section below.
 
@@ -397,18 +399,25 @@ boundary.
 
 ## Release
 
+- **Signed tags are the authoritative release marker.** Each release is an
+  annotated, GPG-signed tag; a GitHub Release object is created from the
+  signed tag to distribute the release artifacts (sdist, wheel,
+  `SHA256SUMS`, and detached-armor GPG `.asc` signatures).
+- **v0.3.0** — premature tag, never shipped. Created and pushed before the
+  package version was bumped; GitHub reports its signature as Verified. It
+  remains untouched as a historical marker and carries no release.
+- **v0.3.1** — intended shipped release. Package version bumped to `0.3.1`;
+  the signed tag, signed artifacts, and GitHub Release are created from it.
 - **v0.2.0** — annotated, GPG-signed tag at CI-green HEAD `605b688`
-  (== `master`); `git tag -v v0.2.0` reports a Good signature. GitHub-side
-  verification shows `false` until the signing public key is uploaded to
-  the account.
+  (== `master`); `git tag -v v0.2.0` reports a Good signature.
+- **v0.1.0** tag remains local-only (never pushed).
 - **master** is pushed; GitHub Actions run 38 is green on native Ubuntu
   3.11 and 3.12.
 - **Release artifacts** — deterministic, reproducible sdist + wheel
   (`tools/release/build_release.py`: `SOURCE_DATE_EPOCH` pinned, sdist
   normalization, two-clean-build byte-identity), GNU `SHA256SUMS` +
-  per-artifact `.sha256`, and detached-armor GPG signatures (`.asc`) for
-  the v0.2.0 artifacts; `verify` fails on tamper.
-- **v0.1.0** tag remains local-only (never pushed).
+  per-artifact `.sha256`, and detached-armor GPG signatures (`.asc`)
+  produced per shipped release; `verify` fails on tamper.
 - Release readiness status: `RELEASE_CHECKLIST.md`.
 
 ## Development
@@ -445,7 +454,7 @@ scan failures block CI.
 | Phase 16 — Race and Concurrency Testing | **COMPLETE (implementation.md Phase 16 / security-spec.md S-031)** — `tests/unit/test_race_concurrency.py`: 13 host-side race/concurrency tests across 5 classes: `RegistryAtomicityTests` (concurrent writers produce valid manifests, concurrent read-during-write never observes corrupt state, concurrent create/destroy remains consistent — Windows file-locking tolerance documented); `SessionStateRaceTests` (concurrent execute+destroy, concurrent execute-twice, destroy-during-init — state machine remains consistent under concurrency); `CleanupRaceTests` (concurrent destroy idempotent, destroy-during-output-collection terminates cleanly); `WorkspaceConcurrentModificationTests` (concurrent file creation remains contained, symlink-replacement-during-read never exposes host data); `PolicyAccessRaceTests` (concurrent `decide()`/`require()` are deterministic and thread-safe). Documentation: corrected the THREAT_MODEL over-claim referencing non-existent `test_lifecycle.py::RaceTests`; added Phase 16 evidence to T-009 and T-039. No production code changed; no seccomp/policy/enforcement change. **Evidence classification: HOST-SIDE / unit-level** — exercises supervisor-level concurrency; does NOT replace native kernel-boundary verification. |
 | Phase 18 — Static and Dependency Analysis | **COMPLETE (implementation.md Phase 18)** — CI-integrated security and code-quality tooling: `ruff` (linting — security + code-quality rules, F/S/B selected, justified exclusions for intentional patterns), `mypy` (type checking — platform-specific Linux-attr ignores documented), `bandit` (Python security scanning — B101/B108/B606/B110/B603/B607 exclusions justified: assert-for-invariants, tempfile-safe-pattern, subprocess-no-shell-safe, observational-fail-safe), `pip-audit` (dependency audit — zero runtime deps verified), `detect-secrets` (secret scanning — baseline with 7 documented false positives: cache files + test fixtures). Coverage measurement available via `coverage.py`. All tools configured in `pyproject.toml`. CI steps added to `.github/workflows/ci.yml` — security-scan failures block CI. No production code changed; no seccomp/policy/enforcement change. **Evidence classification: CI/tooling-level** — proves static analysis and security scanning gates exist; does NOT replace native kernel-boundary verification, adversarial testing, or seccomp verification. |
 | Phase 9 — safe Git workflow (Phase C) | **COMPLETE (implementation.md Phase 9)** — `agent_sandbox/git.py`: a CLOSED read-only operation set (status/diff/changed/untracked/deleted/base/current → builtin status/ls-files/merge-base/rev-parse; commit/push/fetch/checkout/submodule are usage errors, never a passthrough) and a sanitized argv builder: highest-precedence `-c` overrides neutralize hostile repository configuration (core.fsmonitor — executed by `git status`/`diff`, diff.external/textconv — executed by `git diff`, aliases, credential helpers, hooks, ssh, pager/editor, submodule recursion, protocol), builtin words alias-pinned, `-C /workspace` pinned, `--no-ext-diff --no-textconv` on diff — all empirically verified against a genuinely hostile fixture (control: plain `git diff` executes the hostile external-diff + fsmonitor scripts; sanitized: zero markers). The repository is hostile input (ARCHITECTURE 3.2); git executes INSIDE the boundary (network deny-by-construction, zero caps, bounded output S-037, timeout S-036, tree cleanup S-038) — the boundary is the enforcement layer, config control is defense-in-depth. CLI: `git <session-id> <operation> [--json] [-- args...]` gated on the existing `git.read` capability through the single policy decision path (S-015 — no second authorization mechanism; CLI/API/MCP decision-equivalent); the Phase B `diff` command uses the sanitized argv. Evidence: `test_git_workflow.py` (20 tests: closed op set, argv construction, CLI routing, policy/session fail-closed, result mapping), `test_git_attacks.py` (7 host-side hostile-config containment tests + 4 real-boundary containment tests, substrate-gated), 5 N1 git fail-closed rows; adversarial 70 run; zero new runtime dependencies |
-| Phase 20 — Release Hardening | **COMPLETE (implementation.md section 24)** — documented in `RELEASE_CHECKLIST.md`: every v0.1 security criterion has an evidence-backed status. v0.1 acceptance criteria satisfied (implementation.md section 26): runtime, filesystem/process/network isolation, privilege reduction, resource controls, environment sanitization, fail-closed init, session lifecycle, structured audit, CLI, regression tests, adversarial tests — all VERIFIED. Not claimed: production-ready, fully verified, signed release, independently reviewed. Release artifact reproducibility: **VERIFIED** (`tools/release/build_release.py` — deterministic sdist+wheel with `SOURCE_DATE_EPOCH` pinned, sdist header normalization, two-clean-build byte-identity gate, GNU `SHA256SUMS` + per-artifact `.sha256`, tamper-detecting `verify`; `tools/release/test_release.py` 17/17 PASS, CI Phase 20 step). Release integrity: **VERIFIED** — checksums mechanized + tamper-detecting `verify`; cryptographic signing performed with `AGENT_SANDBOX_GPG_KEY` (the v0.2.0 artifacts in `dist/` carry detached-armor `.asc` signatures; fails closed exit 2 without the key). Signed commits: NOT VERIFIED (commits are not signed); the v0.2.0 **tag** is GPG-signed (see Release). Independent Security Review: REQUIRED / NOT YET PERFORMED (implementation.md section 25). aarch64: SUBSTRATE-LIMITED / NOT VERIFIED. Full SECURITY_SPEC.md coverage: PARTIALLY VERIFIED only. Release tag: CREATED — v0.2.0, annotated + GPG-signed at CI-green HEAD 605b688 (== master). |
+| Phase 20 — Release Hardening | **COMPLETE (implementation.md section 24)** — documented in `RELEASE_CHECKLIST.md`: every v0.1 security criterion has an evidence-backed status. v0.1 acceptance criteria satisfied (implementation.md section 26): runtime, filesystem/process/network isolation, privilege reduction, resource controls, environment sanitization, fail-closed init, session lifecycle, structured audit, CLI, regression tests, adversarial tests — all VERIFIED. Not claimed: production-ready, fully verified, signed release, independently reviewed. Release artifact reproducibility: **VERIFIED** (`tools/release/build_release.py` — deterministic sdist+wheel with `SOURCE_DATE_EPOCH` pinned, sdist header normalization, two-clean-build byte-identity gate, GNU `SHA256SUMS` + per-artifact `.sha256`, tamper-detecting `verify`; `tools/release/test_release.py` 17/17 PASS, CI Phase 20 step). Release integrity: **VERIFIED** — checksums mechanized + tamper-detecting `verify`; cryptographic signing mechanism prepared with `AGENT_SANDBOX_GPG_KEY` (fails closed exit 2 without the key; `.asc` signatures produced per shipped release, starting with v0.3.1). Signed commits: NOT VERIFIED (commits are not signed); the v0.2.0 **tag** is GPG-signed (see Release). Independent Security Review: REQUIRED / NOT YET PERFORMED (implementation.md section 25). aarch64: SUBSTRATE-LIMITED / NOT VERIFIED. Full SECURITY_SPEC.md coverage: PARTIALLY VERIFIED only. Release tags: v0.2.0 (annotated + GPG-signed at CI-green HEAD 605b688); v0.3.0 (premature, GitHub-Verified, never shipped); v0.3.1 (intended shipped release). |
 
 This repository contains the security design, the reproducible seccomp
 derivation tooling, and the complete Phase 1 runtime (Steps 1-16: skeleton,
