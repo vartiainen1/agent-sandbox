@@ -40,6 +40,23 @@ from agent_sandbox.isolation import setup
 
 LINUX = sys.platform.startswith("linux") and hasattr(os, "fork")
 
+# Cached substrate probe (same discipline as test_filesystem_attacks.py).
+_fs_status: tuple[bool, str] | None = None
+
+
+def _fs_available() -> tuple[bool, str]:
+    global _fs_status
+    if _fs_status is None:
+        try:
+            with tempfile.TemporaryDirectory(prefix="as-adv-gate-") as src:
+                (pathlib.Path(src) / "marker.txt").write_text("gate\n")
+                cfg = RuntimeConfig.from_dict(_valid_config(src))
+                check = setup._filesystem_probe_impl(cfg)
+            _fs_status = (check.ok, check.reason)
+        except Exception as exc:
+            _fs_status = (False, f"substrate probe raised: {exc}")
+    return _fs_status
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -64,6 +81,11 @@ def _valid_config(src, mode="restricted"):
 def _run_attack(fn, output_mb=50, wall_time_seconds=900):
     """Run a workload function through the real sandbox boundary.
     Returns the SandboxRun result."""
+    ok, reason = _fs_available()
+    if not ok:
+        raise unittest.SkipTest(
+            "filesystem boundary substrate unavailable: " + reason
+        )
     src = tempfile.mkdtemp(prefix="as-adversarial-")
     try:
         (pathlib.Path(src) / "marker.txt").write_text("workspace\n")
