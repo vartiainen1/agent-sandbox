@@ -43,6 +43,7 @@ import unittest
 import unittest.mock
 
 from agent_sandbox import cli as cli_mod
+from agent_sandbox import registry
 from agent_sandbox.audit import (
     EXECUTION_REFUSED,
     EXECUTION_REQUEST,
@@ -519,6 +520,48 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["sessions"], [])
+
+    def test_list_text_shows_network_and_created(self):
+        base = tempfile.mkdtemp(prefix="as-list-")
+        self.addCleanup(shutil.rmtree, base, True)
+        workspace = tempfile.mkdtemp(prefix="as-list-ws-")
+        self.addCleanup(shutil.rmtree, workspace, True)
+        config = RuntimeConfig.from_dict({"mode": "restricted",
+                                         "workspace": workspace})
+        sid = "a" * 32
+        registry.save_session(base, sid, config,
+                              created="2026-08-24T12:00:00+00:00")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), \
+             contextlib.redirect_stderr(err):
+            code = cli_mod.main(["list"], state_dir=base)
+        self.assertEqual(code, 0)
+        text = out.getvalue()
+        self.assertIn("1 session(s):", text)
+        self.assertIn("network=deny", text)
+        self.assertIn("created: 2026-08-24T12:00:00+00:00", text)
+        self.assertIn(sid, text)
+
+    def test_list_json_shows_created(self):
+        base = tempfile.mkdtemp(prefix="as-list-")
+        self.addCleanup(shutil.rmtree, base, True)
+        workspace = tempfile.mkdtemp(prefix="as-list-ws-")
+        self.addCleanup(shutil.rmtree, workspace, True)
+        config = RuntimeConfig.from_dict({"mode": "restricted",
+                                         "workspace": workspace})
+        sid = "b" * 32
+        registry.save_session(base, sid, config,
+                              created="2026-08-24T12:00:00+00:00")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), \
+             contextlib.redirect_stderr(err):
+            code = cli_mod.main(["list", "--json"], state_dir=base)
+        self.assertEqual(code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(len(payload["sessions"]), 1)
+        self.assertEqual(payload["sessions"][0]["created"],
+                         "2026-08-24T12:00:00+00:00")
+        self.assertEqual(payload["sessions"][0]["network_mode"], "deny")
 
     def test_init_refused_exit_3(self):
         refused = InitResult(

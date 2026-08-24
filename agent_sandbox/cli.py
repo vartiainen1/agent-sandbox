@@ -621,8 +621,12 @@ def _cmd_list(argv: list[str], base: str) -> int:
 
     print(f"{len(sessions)} session(s):")
     for s in sessions:
+        created = s.get("created", "")
+        net = s.get("network_mode", "deny")
         print(f"  {s['session_id']}  mode={s['mode']}  "
-              f"workspace={s['workspace']}")
+              f"network={net}  workspace={s['workspace']}")
+        if created:
+            print(f"    created: {created}")
     return 0
 
 
