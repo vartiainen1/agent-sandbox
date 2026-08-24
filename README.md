@@ -370,7 +370,7 @@ S-003/S-004 Unix-socket/credential isolation while leaving the v0.2  proxy path 
 | `RELEASE_CHECKLIST.md` | Phase 20 release hardening checklist — every v0.1 criterion with evidence-backed status |
 | `SECURITY_REVIEW.md` | Independent Security Review evidence package — prepared for external reviewer (NOT YET PERFORMED) |
 
-## Independent Security Review (implementation.md section 25)
+## Independent Security Review
 
 The implementation specification requires an independent security review
 before the project can claim production-ready status. The reviewer must
