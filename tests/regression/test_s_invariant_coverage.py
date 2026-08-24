@@ -514,7 +514,7 @@ def _print_coverage_summary() -> None:
     print("=" * 72)
     mapped = {entry[0] for entry in _S_COVERAGE}
     missing = _ALL_INVARIANTS - mapped
-    print(f"Total S-invariants:   40")
+    print("Total S-invariants:   40")
     print(f"Mapped in matrix:     {len(mapped)}")
     print(f"Missing from matrix:  {len(missing)} {sorted(missing) if missing else ''}")
     print(f"Smoke tests defined:  {len(_SMOKE_TESTS)}")
