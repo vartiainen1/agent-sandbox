@@ -352,8 +352,7 @@ def _cmd_run(argv: list[str]) -> int:
                              "/workspace (the command must live inside "
                              "the sandbox, e.g. /workspace/tool)")
     parser.add_argument("--json", action="store_true",
-                        help="machine-readable result (includes mode and "
-                             "session identity)")
+                        help="machine-readable output")
     parser.add_argument("--audit", default=None, metavar="PATH",
                         help="append ADR-012 JSONL audit events to PATH "
                              "(host-side, observational)")
@@ -426,7 +425,7 @@ def _cmd_create(argv: list[str], base: str) -> int:
                              "ADR-010); validated host-side before the "
                              "session starts (S-021)")
     parser.add_argument("--json", action="store_true",
-                        help="machine-readable result")
+                        help="machine-readable output")
     try:
         args = parser.parse_args(argv)
     except SystemExit:
@@ -491,7 +490,7 @@ def _cmd_exec(argv: list[str], base: str) -> int:
     parser.add_argument("session_id",
                         help="the session id returned by create")
     parser.add_argument("--json", action="store_true",
-                        help="machine-readable result")
+                        help="machine-readable output")
     try:
         args = parser.parse_args(opt_argv)
     except SystemExit:
@@ -644,7 +643,7 @@ def _cmd_diff(argv: list[str], base: str) -> int:
     parser.add_argument("session_id",
                         help="the session id returned by create")
     parser.add_argument("--json", action="store_true",
-                        help="machine-readable result")
+                        help="machine-readable output")
     try:
         args = parser.parse_args(opt_argv)
     except SystemExit:
@@ -676,7 +675,7 @@ def _cmd_git(argv: list[str], base: str) -> int:
                         help="the closed read-only git operation "
                              f"({', '.join(git_mod.GIT_OPERATIONS)})")
     parser.add_argument("--json", action="store_true",
-                        help="machine-readable result")
+                        help="machine-readable output")
     try:
         args = parser.parse_args(opt_argv)
     except SystemExit:
