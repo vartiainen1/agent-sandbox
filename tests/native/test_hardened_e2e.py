@@ -641,7 +641,12 @@ class TestHardenedFailClosedNegative(unittest.TestCase):
         from agent_sandbox.models import InitFailureCode, InitStage
         from agent_sandbox.security.init import SecurityInitializer
         from tests.unit import require_delegation_unavailable
+        from tests.unit import require_namespace_available
 
+        # Premise: the boundary must form (otherwise init refuses at
+        # NAMESPACES and the RESOURCES-stage scenario is unreachable) AND
+        # delegation must be absent (otherwise HARDENED reaches READY).
+        require_namespace_available(self)
         require_delegation_unavailable(self)
         src = tempfile.mkdtemp(prefix="as-n1-native-")
         self.addCleanup(shutil.rmtree, src, True)

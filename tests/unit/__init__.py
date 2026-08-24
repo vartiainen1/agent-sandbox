@@ -39,3 +39,33 @@ def require_delegation_unavailable(testcase):
             "on substrates without delegation."
         )
     return blocked
+
+
+def require_namespace_available(testcase):
+    """Substrate-premise gate for tests that need the namespace boundary
+    to form (execute-path and stage-specific init tests).
+
+    Skips with a recorded reason when the real namespace probe
+    (setup._probe_impl) cannot establish the user/mount/PID/network/UTS/IPC
+    boundary on this host (e.g. GitHub Actions non-root runners where
+    AppArmor blocks unprivileged user namespaces). Tests gated by this
+    helper assert behavior that only exists once the boundary forms; on
+    substrates where it cannot, skipping is the honest outcome - never a
+    crash and never a weakened assertion.
+    """
+    import unittest.mock
+
+    from agent_sandbox.isolation import setup
+    from agent_sandbox.security import init as init_mod
+
+    with unittest.mock.patch.object(init_mod, "_is_linux", return_value=True):
+        check = setup._probe_impl()
+    if not check.ok:
+        testcase.skipTest(
+            "Substrate note: the namespace boundary cannot form here "
+            f"({check.reason}); this test asserts behavior that requires "
+            "the boundary to form, so it is skipped on this substrate. "
+            "The fail-closed path is still covered by the init-path "
+            "wiring tests."
+        )
+    return check.reason

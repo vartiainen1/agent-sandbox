@@ -486,6 +486,9 @@ class ExecutePathFailClosedTests(unittest.TestCase):
         # its own test - here it is a no-op so the scenario reaches the
         # go pipe), and the supervisor-side path completes normally so the
         # refusal surfaces through the run result.
+        from tests.unit import require_namespace_available
+        require_namespace_available(self)  # scenario needs the real
+        # fork chain to reach the go pipe - skip when it cannot form.
         marker = self._marker("go")
         session_dir = tempfile.mkdtemp(prefix="as-n1-gosess-")
         self.addCleanup(shutil.rmtree, session_dir, True)
