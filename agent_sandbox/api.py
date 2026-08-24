@@ -22,8 +22,10 @@ Transport (stdlib ``http.server`` - ZERO runtime dependencies, consistent
 with the project's TCB posture; no framework is required by the
 architecture and none is introduced):
 
-- ``POST /initialize``  body {workspace, mode?, audit?} -> the
+- ``POST /initialize``  body {workspace, mode?, audit?, policy?} -> the
   machine-readable decision {session_id, mode, state, refused, reason}.
+  ``policy`` is an optional capability policy document (version 1 JSON,
+  ADR-010; validated host-side before the session starts, S-021).
 - ``POST /execute``     body {session_id, command: [argv...]} -> the
   result {session_id, mode, state, refused, exit_code, output,
   truncated, timed_out, cleanup_failure} or the refusal

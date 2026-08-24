@@ -11,6 +11,36 @@ audited.
 > The operating system enforces the boundary. The audit system records the
 > result. The host remains protected.
 
+## Quick start
+
+Requires Linux (x86_64 or aarch64) with Python >= 3.11.
+aarch64 enforcement is not yet verified on native ARM64 hardware.
+
+```bash
+# Install (editable, zero runtime dependencies)
+pip install -e .
+
+# One-shot run (transient session, cleanup verified)
+agent-sandbox run --workspace /path/to/project -- echo hello
+
+# Persistent session workflow
+agent-sandbox create --workspace /path/to/project
+agent-sandbox exec <session-id> -- python -m pytest
+agent-sandbox diff <session-id>
+agent-sandbox status <session-id>
+agent-sandbox logs <session-id>
+agent-sandbox destroy <session-id>
+
+# JSON output for automation
+agent-sandbox run --workspace /path/to/project --json -- echo hello
+
+# List all sessions
+agent-sandbox list
+```
+
+All three interfaces (CLI, MCP stdio JSON-RPC, HTTP API) share the same
+enforcement core and produce equivalent security decisions.
+
 ## Status — read this first
 
 | Layer | Status |
