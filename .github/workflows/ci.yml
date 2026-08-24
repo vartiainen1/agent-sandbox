@@ -121,4 +121,8 @@ jobs:
         run: python3 tools/seccomp-derivation/check_rootless_capabilities.py
 
       - name: Phase 20 - release reproducibility + integrity (deterministic sdist/wheel, SHA-256 manifest, tamper detection)
-        run: python3 tools/release/test_release.py
+        # Ubuntu 24.04 runners ship setuptools 68.1.2, which has the known
+        # bdist_wheel-on-Python-3.12 bug (install_lib never creates the wheel
+        # target dir; fixed in setuptools 69+). Upgrade before the build so the
+        # 3.12 job exercises the same working backend as 3.11.
+        run: pip install -U setuptools wheel && python3 tools/release/test_release.py
