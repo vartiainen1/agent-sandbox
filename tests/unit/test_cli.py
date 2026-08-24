@@ -470,6 +470,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, cli_mod.EXIT_USAGE)
         self.assertIn("commands:", err)
 
+    def test_version_long_flag(self):
+        from agent_sandbox import __version__
+        code, out, _ = self._run_cli(["--version"])
+        self.assertEqual(code, 0)
+        self.assertIn(__version__, out)
+        self.assertIn("agent-sandbox", out)
+
+    def test_version_short_flag(self):
+        from agent_sandbox import __version__
+        code, out, _ = self._run_cli(["-V"])
+        self.assertEqual(code, 0)
+        self.assertIn(__version__, out)
+
     def test_invalid_mode_usage_error(self):
         code, _, _ = self._run_cli(["--mode", "supersafe",
                                     "--workspace", "/tmp", "--", "x"])

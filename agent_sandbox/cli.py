@@ -837,6 +837,10 @@ def _print_usage() -> None:
     """Top-level help showing all available commands."""
     print("usage: agent-sandbox <command> [options]", file=sys.stderr)
     print("", file=sys.stderr)
+    print("options:", file=sys.stderr)
+    print("  -h, --help     show this help message and exit", file=sys.stderr)
+    print("  --version, -V  show version and exit", file=sys.stderr)
+    print("", file=sys.stderr)
     print("commands:", file=sys.stderr)
     print("  run       One-shot create + execute + cleanup", file=sys.stderr)
     print("  create    Create + initialize an isolated session", file=sys.stderr)
@@ -859,6 +863,12 @@ def main(argv: Sequence[str] | None = None,
     default is AGENT_SANDBOX_STATE_DIR or ~/.agent-sandbox."""
     raw = list(sys.argv[1:] if argv is None else argv)
     base = state_dir or registry.state_base_dir()
+    # --version: print the package version and exit 0 (standard CLI
+    # convention; the version is single-sourced in __init__.py).
+    if raw and raw[0] in ("--version", "-V"):
+        from agent_sandbox import __version__
+        print(f"agent-sandbox {__version__}")
+        return 0
     if raw and raw[0] in COMMANDS:
         cmd = raw[0]
         rest = raw[1:]
