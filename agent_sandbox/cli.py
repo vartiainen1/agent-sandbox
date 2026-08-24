@@ -863,11 +863,13 @@ def main(argv: Sequence[str] | None = None,
     default is AGENT_SANDBOX_STATE_DIR or ~/.agent-sandbox."""
     raw = list(sys.argv[1:] if argv is None else argv)
     base = state_dir or registry.state_base_dir()
-    # --version: print the package version and exit 0 (standard CLI
-    # convention; the version is single-sourced in __init__.py).
+    # --version/--help: standard CLI flags handled before command dispatch.
     if raw and raw[0] in ("--version", "-V"):
         from agent_sandbox import __version__
         print(f"agent-sandbox {__version__}")
+        return 0
+    if raw and raw[0] in ("--help", "-h"):
+        _print_usage()
         return 0
     if raw and raw[0] in COMMANDS:
         cmd = raw[0]

@@ -483,6 +483,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(__version__, out)
 
+    def test_help_top_level_shows_usage(self):
+        code, _, err = self._run_cli(["--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("commands:", err)
+        self.assertIn("--version", err)
+
+    def test_help_short_flag_shows_usage(self):
+        code, _, err = self._run_cli(["-h"])
+        self.assertEqual(code, 0)
+        self.assertIn("commands:", err)
+
     def test_invalid_mode_usage_error(self):
         code, _, _ = self._run_cli(["--mode", "supersafe",
                                     "--workspace", "/tmp", "--", "x"])
