@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-sandbox"
-version = "0.1.0.dev0"
+version = "0.2.0"
 description = "Security-first execution sandbox for autonomous AI agents, providing OS-enforced isolation, policy-controlled execution, network controls, and security auditing."
 requires-python = ">=3.11"
 license = { text = "MIT" }

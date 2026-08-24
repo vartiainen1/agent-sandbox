@@ -351,10 +351,6 @@ S-003/S-004 Unix-socket/credential isolation while leaving the v0.2  proxy path 
   and the complete HARDENED path on the native VM (commit 7c1c30e).
 - **No GitHub Release object / PyPI publication** — the v0.2.0 git tag is
   the release marker; no GitHub Release or PyPI package exists.
-- **Package version vs release tag** — `pyproject.toml` and
-  `agent_sandbox.__version__` still report `0.1.0.dev0` while the release
-  tag is `v0.2.0`; a coordinated version bump + release-test update is
-  tracked but not yet applied.
 - **Independent security review not yet performed** — required before any
   production-ready claim; see the section below.
 

@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix="asbx-t1-") as td:
             meta = [n for n in z.namelist() if n.endswith(".dist-info/METADATA")][0]
             md = z.read(meta).decode("utf-8")
         check("wheel METADATA name=agent-sandbox", "Name: agent-sandbox" in md)
-        check("wheel METADATA version=0.1.0.dev0", "Version: 0.1.0.dev0" in md)
+        check("wheel METADATA version=0.2.0", "Version: 0.2.0" in md)
         check("wheel METADATA requires-python>=3.11", "Requires-Python: >=3.11" in md)
         check("wheel contains the package module",
               any(n.startswith("agent_sandbox/") for n in zipfile.ZipFile(wheel).namelist()))

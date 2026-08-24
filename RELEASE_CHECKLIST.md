@@ -45,9 +45,9 @@
 | Item | Status | Evidence |
 |---|---|---|
 | Full unit suite exists | **VERIFIED** | `tests/unit/` — 13 modules |
-| Full unit suite passes | **VERIFIED** | 761 run, 0 failures, 0 errors (272 documented Linux-gated skips) |
-| Fail-closed matrix exists | **VERIFIED** | `tests/unit/test_failclosed_matrix.py` — 145 tests |
-| Fail-closed matrix passes | **VERIFIED** | 145 run, 0 failures (19 documented skips) |
+| Full unit suite passes | **VERIFIED** | 756 run, 0 failures, 0 errors (215 documented skips on the Windows substrate) |
+| Fail-closed matrix exists | **VERIFIED** | `tests/unit/test_failclosed_matrix.py` — 42 tests |
+| Fail-closed matrix passes | **VERIFIED** | 42 run, 0 failures (10 documented skips) |
 | Phase 17 S-invariant coverage matrix | **VERIFIED** | `tests/regression/test_s_invariant_coverage.py` — 40 S-invariants mapped, 44 tests, 0 failures (13 Windows substrate skips) |
 
 ---
@@ -211,7 +211,7 @@
 | Session lifecycle | **VERIFIED** | 21 lifecycle tests + destroy race tests |
 | Structured audit | **VERIFIED** | ADR-012 JSONL recorder, session-correlated |
 | CLI | **VERIFIED** | Phase B — create/exec/run/status/diff/logs/destroy |
-| Security regression tests | **VERIFIED** | 761 unit + 70 adversarial + 21 fuzz + 13 race + 44 Phase-17 S-invariant coverage |
+| Security regression tests | **VERIFIED** | 756 unit (incl. 42 fail-closed + 13 race) + 70 adversarial + 21 fuzz + 44 Phase-17 S-invariant + 26 native — full suite 917 |
 | Adversarial tests | **VERIFIED** | 70 adversarial tests through real boundary |
 
 > **Test-infrastructure fix (2026-08-24):** Phase 17 smoke-test factory now
